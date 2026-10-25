@@ -325,22 +325,22 @@ wire            osnotify_adapter_play;
 // bridge target commands
 // synchronous to clk_74a
 
-reg             target_dataslot_read;       
+wire            target_dataslot_read;       
 reg             target_dataslot_write;
 reg             target_dataslot_getfile;    // require additional param/resp structs to be mapped
-reg             target_dataslot_openfile;   // require additional param/resp structs to be mapped
+wire            target_dataslot_openfile;   // driven by the cover picker
 
 wire            target_dataslot_ack;        
 wire            target_dataslot_done;
 wire    [2:0]   target_dataslot_err;
 
-reg     [15:0]  target_dataslot_id;
-reg     [31:0]  target_dataslot_slotoffset;
-reg     [31:0]  target_dataslot_bridgeaddr;
-reg     [31:0]  target_dataslot_length;
+wire    [15:0]  target_dataslot_id;
+wire    [31:0]  target_dataslot_slotoffset;
+wire    [31:0]  target_dataslot_bridgeaddr;
+wire    [31:0]  target_dataslot_length;
 
-wire    [31:0]  target_buffer_param_struct; // to be mapped/implemented when using some Target commands
-wire    [31:0]  target_buffer_resp_struct;  // to be mapped/implemented when using some Target commands
+wire    [31:0]  target_buffer_param_struct = 32'hF3000000; // cover picker's 0x0192 filename struct (bridge-readable)
+wire    [31:0]  target_buffer_resp_struct  = 32'h0;
     
 // bridge data slot access
 // synchronous to clk_74a
@@ -468,6 +468,7 @@ always_comb begin
     32'hF8xxxxxx: begin bridge_rd_data = cmd_bridge_rd_data;          end
     32'hF1000000: begin bridge_rd_data = int_bridge_read_data;        end
     32'hF2000000: begin bridge_rd_data = int_bridge_read_data;        end
+    32'hF3xxxxxx: begin bridge_rd_data = picker_param_rd;             end
     default:      begin bridge_rd_data = 0;                           end
   endcase
 end
@@ -493,6 +494,8 @@ always_ff @(posedge clk_74a) begin
       32'hF2000000: begin int_bridge_read_data  <= run_settings;   end //! Runtime settings
     endcase
   end
+
+  if (picker_reset) reset_timer <= 1; //! cover picker loaded a new ROM
 end
 
 logic clk_sys, clk_ram, clk_ram_90, clk_vid, clk_vid_90;
@@ -675,9 +678,11 @@ save_handler save_handler
 
 reg ioctl_download = 0;
 
+reg picker_download_1 = 0;
 always_ff @(posedge clk_74a) begin
-  if      (dataslot_requestwrite) ioctl_download <= 1;
-  else if (dataslot_allcomplete)  ioctl_download <= 0;
+  picker_download_1 <= picker_download;
+  if      (dataslot_requestwrite | picker_download)                   ioctl_download <= 1;
+  else if (dataslot_allcomplete | (picker_download_1 & ~picker_download)) ioctl_download <= 0;
 end
 
 logic [14:0] cart_addr;
@@ -702,7 +707,8 @@ always_comb begin
   sgb_boot_download   = 0;
 
   if(ioctl_download) begin
-    case (dataslot_requestwrite_id)
+    if (picker_download) cart_download = 1'b1;
+    else case (dataslot_requestwrite_id)
       1: begin cart_download        = 1'b1; end
       2: begin sgb_border_download  = 1'b1; end
       3: begin palette_download     = 1'b1; end
@@ -1211,6 +1217,62 @@ reg de_prev;
 
 wire de = ~(h_blank || v_blank);
 
+//////// Cover picker (box-art game menu) ////////
+logic        picker_pack_wr;
+logic [27:0] picker_pack_addr;
+logic [15:0] picker_pack_data;
+logic [31:0] picker_param_rd;
+logic        picker_menu_on, picker_download, picker_reset;
+logic [23:0] picker_rgb;
+
+data_loader #(
+  .ADDRESS_MASK_UPPER_4   ( 4'h3  ),
+  .OUTPUT_WORD_SIZE       ( 2     ),
+  .WRITE_MEM_CLOCK_DELAY  ( 4     )
+) cover_pack_loader (
+  .clk_74a              ( clk_74a               ),
+  .clk_memory           ( clk_74a               ),
+  .bridge_wr            ( bridge_wr             ),
+  .bridge_endian_little ( bridge_endian_little  ),
+  .bridge_addr          ( bridge_addr           ),
+  .bridge_wr_data       ( bridge_wr_data        ),
+  .write_en             ( picker_pack_wr        ),
+  .write_addr           ( picker_pack_addr      ),
+  .write_data           ( picker_pack_data      )
+);
+
+cover_picker cover_picker (
+  .clk_74a                    ( clk_74a                    ),
+  .enable                     ( run_settings[8]            ),
+  .core_ready                 ( reset_n                    ),
+  .cont1_key                  ( cont1_key                  ),
+  .pack_wr                    ( picker_pack_wr             ),
+  .pack_addr                  ( picker_pack_addr           ),
+  .pack_data                  ( picker_pack_data           ),
+  .target_dataslot_read       ( target_dataslot_read       ),
+  .target_dataslot_openfile   ( target_dataslot_openfile   ),
+  .target_dataslot_id         ( target_dataslot_id         ),
+  .target_dataslot_slotoffset ( target_dataslot_slotoffset ),
+  .target_dataslot_bridgeaddr ( target_dataslot_bridgeaddr ),
+  .target_dataslot_length     ( target_dataslot_length     ),
+  .target_dataslot_done       ( target_dataslot_done       ),
+  .target_dataslot_err        ( target_dataslot_err        ),
+  .bridge_rd                  ( bridge_rd                  ),
+  .bridge_addr                ( bridge_addr                ),
+  .bridge_endian_little       ( bridge_endian_little       ),
+  .param_rd_data              ( picker_param_rd            ),
+  .menu_active                (                            ),
+  .picker_download            ( picker_download            ),
+  .picker_reset               ( picker_reset               ),
+  .clk_vid                    ( clk_vid                    ),
+  .de                         ( de                         ),
+  .hs                         ( video_hs_gb                ),
+  .vs                         ( video_vs_gb                ),
+  .menu_rgb                   ( picker_rgb                 ),
+  .menu_on                    ( picker_menu_on             )
+);
+
+
 always_ff @(posedge clk_vid) begin
   video_hs_reg  <= 0;
   video_de_reg  <= 0;
@@ -1219,7 +1281,7 @@ always_ff @(posedge clk_vid) begin
   if (de) begin
     video_de_reg  <= 1;
 
-    video_rgb_reg <= video_rgb_gb;
+    video_rgb_reg <= picker_menu_on ? picker_rgb : video_rgb_gb;
   end else if (de_prev && ~de) begin
     video_rgb_reg <= 24'h0;
   end
