@@ -64,48 +64,39 @@ localparam ENT_WORDS  = 8 + 64 * MAX_ENTRIES;       // header + entries, 16-bit 
 localparam IMG_OFFSET = 28'h0010000;                // bridge byte offset of the image region
 
 // ------------------------------------------------------------------ pack memories (written by the loader)
-reg [15:0] ent_ram [0:ENT_WORDS-1];
-reg [15:0] idx_ram [0:IDX_WORDS-1];
-reg [15:0] pal_ram [0:255];
-
-wire pack_is_img = pack_addr[27:16] != 0;
-always @(posedge clk_74a) begin
-    if (pack_wr) begin
-        if (pack_is_img) begin
-            if (pack_addr[15:9] == 0) pal_ram[pack_addr[8:1]] <= pack_data;
-            else if (pack_addr[15:0] - 16'h200 < PIX) idx_ram[(pack_addr[15:0] - 16'h200) >> 1] <= pack_data;
-        end else begin
-            if (pack_addr[15:1] < ENT_WORDS) ent_ram[pack_addr[15:1]] <= pack_data;
-        end
-    end
-end
+wire        pack_is_img = pack_addr[27:16] != 0;
+wire [15:0] img_off     = pack_addr[15:0] - 16'h200;
+wire        pal_we = pack_wr &  pack_is_img & (pack_addr[15:9] == 0);
+wire        idx_we = pack_wr &  pack_is_img & (pack_addr[15:9] != 0) & (img_off < PIX);
+wire        ent_we = pack_wr & ~pack_is_img & (pack_addr[15:1] < ENT_WORDS);
 
 // entries read port (clk_74a)
 reg  [11:0] ent_raddr = 0;
-reg  [15:0] ent_q;
-always @(posedge clk_74a) ent_q <= ent_ram[ent_raddr];
+wire [15:0] ent_q;
+picker_dpram #(.WIDTH(16), .ADDR(12), .DEPTH(ENT_WORDS)) ent_ram (
+    .wclk(clk_74a), .we(ent_we), .waddr(pack_addr[12:1]), .wdata(pack_data),
+    .rclk(clk_74a), .raddr(ent_raddr), .q(ent_q));
 
 // title buffer for the overlay (written here, read in clk_vid)
-reg [15:0] title_ram [0:21];
 reg  [4:0] title_waddr_w = 0;
 reg        title_we = 0;
-always @(posedge clk_74a) if (title_we) title_ram[title_waddr_w] <= ent_q;
+wire [4:0] title_raddr;
+wire [15:0] title_q;
+picker_dpram #(.WIDTH(16), .ADDR(5)) title_ram (
+    .wclk(clk_74a), .we(title_we), .waddr(title_waddr_w), .wdata(ent_q),
+    .rclk(clk_vid), .raddr(title_raddr), .q(title_q));
 
 
 // ------------------------------------------------------------------ parameter struct (0x108 bytes, host-readable)
 // stored as 66 words in bridge byte order (big-endian unless bridge_endian_little)
-reg [31:0] param_ram [0:65];
 reg  [6:0] param_waddr = 0;
 reg [31:0] param_wdata = 0;
 reg        param_we = 0;
-always @(posedge clk_74a) begin
-    if (param_we) param_ram[param_waddr] <= param_wdata;
-end
-reg [6:0] param_raddr;
-always @(posedge clk_74a) begin
-    if (bridge_rd) param_raddr <= bridge_addr[8:2];
-    param_rd_data <= param_ram[param_raddr];
-end
+wire [31:0] param_q;
+picker_dpram #(.WIDTH(32), .ADDR(7), .DEPTH(66)) param_ram (
+    .wclk(clk_74a), .we(param_we), .waddr(param_waddr), .wdata(param_wdata),
+    .rclk(clk_74a), .raddr(bridge_addr[8:2]), .q(param_q));
+always @(posedge clk_74a) param_rd_data <= param_q;
 
 // ------------------------------------------------------------------ buttons (edge detect + repeat)
 wire btn_left   = cont1_key[2];
@@ -321,10 +312,11 @@ reg  [8:0] px = 0, py = 0; // current pixel position (counted from de/hs/vs)
 reg        de_1 = 0, hs_1 = 0, vs_1 = 0;
 always @(posedge clk_vid) begin
     de_1 <= de; hs_1 <= hs; vs_1 <= vs;
+    // py counts visible lines only (bumped at the end of each line that had pixels), so row 0 is the top of the
+    // picture rather than the first line after vsync
     if (vs & ~vs_1) py <= 0;
-    else if (hs & ~hs_1) begin py <= py + 1'b1; px <= 0; end
+    else if (de_1 & ~de) begin py <= py + 1'b1; px <= 0; end
     else if (de) px <= px + 1'b1;
-    else if (de_1 & ~de) px <= 0;
 end
 
 // menu state synchronised into clk_vid
@@ -338,7 +330,10 @@ wire [8:0] qx = de ? px + 9'd3 : 9'd2;
 // stage 1: index word / title word / shape tests
 wire in_cover = (qx >= CX) && (qx < CX + COVER_W) && (py >= CY) && (py < CY + COVER_H);
 wire [13:0] pix_n = (py - CY) * COVER_W + (qx - CX);
-reg  [15:0] idx_q;  always @(posedge clk_vid) idx_q <= idx_ram[pix_n[13:1]];
+wire [15:0] idx_q;
+picker_dpram #(.WIDTH(16), .ADDR(13), .DEPTH(IDX_WORDS)) idx_ram (
+    .wclk(clk_74a), .we(idx_we), .waddr(img_off[13:1]), .wdata(pack_data),
+    .rclk(clk_vid), .raddr(pix_n[13:1]), .q(idx_q));
 reg  in_cover_1 = 0, pix_odd_1 = 0;
 always @(posedge clk_vid) begin in_cover_1 <= in_cover; pix_odd_1 <= pix_n[0]; end
 
@@ -346,7 +341,7 @@ localparam [8:0] TX = 9'd12, TY = 9'd112;
 wire        in_title = (py >= TY) && (py < TY + 8) && (qx >= TX) && (qx < TX + 8 * 17);
 wire [7:0]  tcol     = (qx - TX) >> 3;
 wire [2:0]  tbit     = (qx - TX) & 3'd7;
-reg  [15:0] title_q;  always @(posedge clk_vid) title_q <= title_ram[tcol[4:1]];
+assign title_raddr = tcol[4:1];
 reg         tcol0_1 = 0; reg [2:0] tbit_1 = 0; reg in_title_1 = 0;
 always @(posedge clk_vid) begin tcol0_1 <= tcol[0]; tbit_1 <= tbit; in_title_1 <= in_title; end
 
@@ -356,7 +351,10 @@ reg  arrow_1 = 0; always @(posedge clk_vid) arrow_1 <= arrow_l | arrow_r;
 
 // stage 2: palette lookup / glyph row
 wire [7:0]  pidx  = pix_odd_1 ? idx_q[15:8] : idx_q[7:0];
-reg  [15:0] pal_q;  always @(posedge clk_vid) pal_q <= pal_ram[pidx];
+wire [15:0] pal_q;
+picker_dpram #(.WIDTH(16), .ADDR(8)) pal_ram (
+    .wclk(clk_74a), .we(pal_we), .waddr(pack_addr[8:1]), .wdata(pack_data),
+    .rclk(clk_vid), .raddr(pidx), .q(pal_q));
 wire [7:0]  tchar = tcol0_1 ? title_q[15:8] : title_q[7:0];
 wire [7:0]  glyph;
 font8x8_rom font (.clk(clk_vid), .addr({tchar[6:0], py[2:0] - TY[2:0]}), .q(glyph));
