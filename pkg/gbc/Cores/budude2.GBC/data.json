@@ -52,6 +52,17 @@
         ],
         "address": "0x30000000",
         "size_maximum": "0x400000"
+      },
+      {
+        "id": 101,
+        "name": "Game",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x8",
+        "extensions": [
+          "gbc",
+          "gb"
+        ]
       }
     ]
   }

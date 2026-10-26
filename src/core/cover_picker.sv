@@ -12,7 +12,7 @@
 module cover_picker #(
     parameter MAX_ENTRIES = 31,
     parameter COVER_SLOT  = 16'd100,
-    parameter CART_SLOT   = 16'd1,
+    parameter CART_SLOT   = 16'd101,
     parameter [31:0] BRIDGE_PACK = 32'h30000000,
     parameter [31:0] BRIDGE_CART = 32'h10000000,
     parameter [31:0] PARAM_ADDR  = 32'hF3000000
@@ -43,6 +43,7 @@ module cover_picker #(
     output reg         menu_active = 0,
     output reg         picker_download = 0,
     output reg         picker_reset = 0,
+    output reg         hold_gb = 1,      // keep the Game Boy in reset: from boot until a game is launched
 
     input  wire        clk_vid,
     input  wire        de,
@@ -97,7 +98,8 @@ wire [31:0] param_q;
 picker_dpram #(.WIDTH(32), .ADDR(7), .DEPTH(66)) param_ram (
     .wclk(clk_74a), .we(param_we), .waddr(param_waddr), .wdata(param_wdata),
     .rclk(clk_74a), .raddr(bridge_addr[8:2]), .q(param_q));
-always @(posedge clk_74a) param_rd_data <= param_q;
+// APF bridge reads lag one transaction: latch on bridge_rd like every stock bridge device
+always @(posedge clk_74a) if (bridge_rd) param_rd_data <= param_q;
 
 // ================================================================== frame tick (vsync into clk_74a)
 reg [2:0] vs_s = 0;
@@ -163,6 +165,8 @@ reg  [7:0]  title_w = 0, sub_w = 0;
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
 wire        done_rise = target_dataslot_done & ~done_1;
+reg  [2:0]  last_err = 0;
+always @(posedge clk_74a) if (done_rise && target_dataslot_err != 0) last_err <= target_dataslot_err;
 
 wire [10:0] ebase = 11'd8 + {idx, 6'd0};
 wire [4:0]  prev = (idx == 0) ? count - 1'b1 : idx - 1'b1;
@@ -317,9 +321,9 @@ always @(posedge clk_74a) begin
         target_dataslot_read <= 1; state <= S_PULL_WAIT;
     end
     S_PULL_WAIT: if (done_rise) begin picker_download <= 0; state <= S_RESET; end
-    S_RESET: begin picker_reset <= 1; menu_active <= 0; game_loaded <= 1; state <= S_RUN; end
-    S_RUN: if (hold_open) begin level_target <= 0; ent_raddr <= ebase + 11'd20; state <= S_LOAD; end
-    S_OFF: menu_active <= 0;
+    S_RESET: begin picker_reset <= 1; menu_active <= 0; game_loaded <= 1; hold_gb <= 0; state <= S_RUN; end
+    S_RUN: if (hold_open) begin hold_gb <= 1; level_target <= 0; ent_raddr <= ebase + 11'd20; state <= S_LOAD; end
+    S_OFF: begin menu_active <= 0; hold_gb <= 0; end
     default: state <= S_BOOT;
     endcase
 end
@@ -332,6 +336,8 @@ always @(posedge clk_vid) begin
     tw_s <= title_w; sw_s <= sub_w; gen_s <= {gen_s[1:0], gen};
 end
 wire menu_v = menu_s[1];
+reg [5:0] st_s = 0; reg [2:0] er_s = 0;
+always @(posedge clk_vid) begin st_s <= state; er_s <= last_err; end
 assign menu_on = menu_v;
 
 // visible pixel position
@@ -422,10 +428,20 @@ wire       d_dim = d_row && !d_cur && (dx[1:0] == 1 || dx[1:0] == 2);
 // background gradient
 wire [7:0] bg_r = 8'd30 - py[7:3], bg_g = 8'd36 - py[7:3], bg_b = 8'd54 - py[7:2];
 
+// debug readout, top-left: "S<state hex> E<err>"
+wire [8:0] dbx = qx - 9'd2;
+wire       dbg_on = py >= 2 && py < 9 && qx >= 2 && dbx < 9'd48;
+function [7:0] hexc(input [3:0] v); hexc = (v < 10) ? 8'h30 + v : 8'h37 + v; endfunction
+wire [2:0] dci = dbx[5:3];
+wire [7:0] dchar = dci == 0 ? "S" : dci == 1 ? hexc({2'b0, st_s[5:4]}) : dci == 2 ? hexc(st_s[3:0]) :
+                   dci == 4 ? "E" : dci == 5 ? hexc({1'b0, er_s}) : 8'h20;
+
 localparam K_NONE = 0, K_C = 1, K_CR = 2, K_T = 3, K_TR = 4;
 reg [2:0] k1 = 0; reg cut1 = 0, odd1 = 0, t1_1 = 0, t2_1 = 0, dcur1 = 0, ddim1 = 0; reg [2:0] a1 = 0, trow1 = 0;
 reg [7:0] bgr1 = 0, bgg1 = 0, bgb1 = 0;
+reg dbg1 = 0; reg [6:0] dch1 = 0; reg [2:0] dcol1 = 0, drow1 = 0;
 always @(posedge clk_vid) begin
+    dbg1 <= dbg_on; dch1 <= dchar[6:0]; dcol1 <= dbx[2:0]; drow1 <= py - 9'd2;
     k1    <= in_c ? K_C : in_cr ? K_CR : in_t ? K_T : in_trf ? K_TR : K_NONE;
     cut1  <= in_c ? corner(clx, cly, 6'd63, 2'd3) : in_t ? corner(tlx, tly, 6'd39, 2'd2) : 1'b0;
     odd1  <= (in_c || in_cr) ? cpix[0] : tpix[0];
@@ -443,13 +459,13 @@ picker_dpram #(.WIDTH(16), .ADDR(9)) pal_ram (
     .wclk(clk_74a), .we(pal_we), .waddr(pal_wa), .wdata(pack_data),
     .rclk(clk_vid), .raddr(pal_ra), .q(pal_q));
 wire [7:0] glyph;
-font5x7_rom font (.clk(clk_vid), .addr({map_q[9:3], trow1}), .q(glyph));
+font5x7_rom font (.clk(clk_vid), .addr(dbg1 ? {dch1, drow1} : {map_q[9:3], trow1}), .q(glyph));
 
 reg [2:0] k2 = 0, a2 = 0, gcol2 = 0; reg cut2 = 0, t1_2 = 0, t2_2 = 0, gval2 = 0, dcur2 = 0, ddim2 = 0;
-reg [7:0] bgr2 = 0, bgg2 = 0, bgb2 = 0;
+reg [7:0] bgr2 = 0, bgg2 = 0, bgb2 = 0; reg dbg2 = 0;
 always @(posedge clk_vid) begin
     k2 <= k1; a2 <= a1; cut2 <= cut1; t1_2 <= t1_1; t2_2 <= t2_1; dcur2 <= dcur1; ddim2 <= ddim1;
-    gcol2 <= map_q[2:0]; gval2 <= map_q[10];
+    gcol2 <= dbg1 ? dcol1 : map_q[2:0]; gval2 <= dbg1 ? 1'b1 : map_q[10]; dbg2 <= dbg1;
     bgr2 <= bgr1; bgg2 <= bgg1; bgb2 <= bgb1;
 end
 
@@ -476,6 +492,7 @@ wire       glyph_on = gval2 && gcol2 < 3'd5 && glyph[gcol2];
 always @(posedge clk_vid) begin
     if (!menu_v)                              menu_rgb <= 24'h000000;
     else if (k2 != K_NONE && !cut2)           menu_rgb <= {mix(bgr2, cr, wc), mix(bgg2, cg, wc), mix(bgb2, cb, wc)};
+    else if (dbg2 && glyph_on)                menu_rgb <= 24'h40FF60;
     else if (t1_2 && glyph_on)                menu_rgb <= {mix(bgr2, 8'd246, lvl2), mix(bgg2, 8'd246, lvl2), mix(bgb2, 8'd250, lvl2)};
     else if (t2_2 && glyph_on)                menu_rgb <= {mix(bgr2, 8'd128, lvl2), mix(bgg2, 8'd140, lvl2), mix(bgb2, 8'd168, lvl2)};
     else if (dcur2)                           menu_rgb <= 24'hE8ECF4;

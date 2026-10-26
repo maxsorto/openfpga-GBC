@@ -740,7 +740,7 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_1wire
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spiclk
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimiso
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to bridge_spimosi
-set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT MEDIUM
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION NEVER
 
@@ -753,6 +753,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE gb/data_unloader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE gb/psram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE gb/data_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/cover_picker.sv
+set_global_assignment -name VERILOG_FILE core/picker_dpram.v
 set_global_assignment -name SYSTEMVERILOG_FILE core/font8x8_rom.sv
 set_global_assignment -name SYSTEMVERILOG_FILE gb/sound_i2s.sv
 set_global_assignment -name SYSTEMVERILOG_FILE gb/sync_fifo.sv

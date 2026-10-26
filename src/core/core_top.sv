@@ -339,6 +339,7 @@ wire    [31:0]  target_dataslot_slotoffset;
 wire    [31:0]  target_dataslot_bridgeaddr;
 wire    [31:0]  target_dataslot_length;
 
+wire            picker_hold_gb;             // cover picker: Game Boy held in reset
 wire    [31:0]  target_buffer_param_struct = 32'hF3000000; // cover picker's 0x0192 filename struct (bridge-readable)
 wire    [31:0]  target_buffer_resp_struct  = 32'h0;
     
@@ -954,7 +955,10 @@ wire lcd_vsync;
 
 wire DMA_on;
 
-wire reset = (~reset_n_s | (external_reset_s & loading_done) | cart_download | boot_download);
+// hold the Game Boy in reset while the cover menu is up (no boot ROM chime behind the menu)
+reg [1:0] picker_hold_s = 0;
+always @(posedge clk_sys) picker_hold_s <= {picker_hold_s[0], picker_hold_gb};
+wire reset = (~reset_n_s | (external_reset_s & loading_done) | cart_download | boot_download | picker_hold_s[1]);
 wire speed;
 
 wire [15:0] GB_AUDIO_L;
@@ -1262,6 +1266,7 @@ cover_picker cover_picker (
   .bridge_endian_little       ( bridge_endian_little       ),
   .param_rd_data              ( picker_param_rd            ),
   .menu_active                (                            ),
+  .hold_gb                    ( picker_hold_gb             ),
   .picker_download            ( picker_download            ),
   .picker_reset               ( picker_reset               ),
   .clk_vid                    ( clk_vid                    ),
