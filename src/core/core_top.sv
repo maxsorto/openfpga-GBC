@@ -326,7 +326,7 @@ wire            osnotify_adapter_play;
 // synchronous to clk_74a
 
 wire            target_dataslot_read;       
-reg             target_dataslot_write;
+wire            target_dataslot_write;      // cover picker: .sav / suspend writes
 reg             target_dataslot_getfile;    // require additional param/resp structs to be mapped
 wire            target_dataslot_openfile;   // driven by the cover picker
 
@@ -636,13 +636,13 @@ save_handler save_handler
     .save_state_bridge_read_data  ( save_state_bridge_read_data ),
 
     // APF Save States
-    .savestate_load               ( savestate_load              ),
+    .savestate_load               ( savestate_load | picker_ss_load   ),
     .savestate_load_ack_s         ( savestate_load_ack          ),
     .savestate_load_busy_s        ( savestate_load_busy         ),
     .savestate_load_ok_s          ( savestate_load_ok           ),
     .savestate_load_err_s         ( savestate_load_err          ),
 
-    .savestate_start              ( savestate_start             ),
+    .savestate_start              ( savestate_start | picker_ss_start ),
     .savestate_start_ack_s        ( savestate_start_ack         ),
     .savestate_start_busy_s       ( savestate_start_busy        ),
     .savestate_start_ok_s         ( savestate_start_ok          ),
@@ -1071,9 +1071,22 @@ gb gb
 // Sound
 
 wire [15:0] audio_l, audio_r;
+logic       picker_snd_open, picker_snd_close;   // cover picker pause chime toggles
 
-assign audio_l = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_L;
-assign audio_r = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_R;
+wire [15:0] game_l = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_L;
+wire [15:0] game_r = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_R;
+// pause menu chime, mixed in with saturation
+wire signed [15:0] chime;
+ui_chime ui_chime (.clk(clk_sys), .t_open(picker_snd_open), .t_close(picker_snd_close), .out(chime));
+function [15:0] sat_add(input [15:0] a, input signed [15:0] b);
+  reg signed [16:0] t;
+  begin
+    t = $signed({a[15], a}) + $signed({b[15], b});
+    sat_add = (t > 17'sd32767) ? 16'h7FFF : (t < -17'sd32768) ? 16'h8000 : t[15:0];
+  end
+endfunction
+assign audio_l = sat_add(game_l, chime);
+assign audio_r = sat_add(game_r, chime);
 
 audio_mixer #(
   .DW     ( 16  ),
@@ -1227,6 +1240,20 @@ logic [27:0] picker_pack_addr;
 logic [15:0] picker_pack_data;
 logic [31:0] picker_param_rd;
 logic        picker_menu_on, picker_download, picker_reset;
+logic        picker_pause, picker_ss_start, picker_ss_load, picker_dim;
+// battery save size exactly as reported to the host in the data table (save_handler)
+logic [31:0] picker_sav_bytes;
+always_comb begin
+  if (!cart_has_save) picker_sav_bytes = 0;
+  else begin
+    case (ram_mask_file)
+      8'h01: picker_sav_bytes = 512;    8'h03: picker_sav_bytes = 2048;   8'h0F: picker_sav_bytes = 8192;
+      8'h3F: picker_sav_bytes = 32768;  8'h7F: picker_sav_bytes = 65536;  8'hFF: picker_sav_bytes = 131072;
+      default: picker_sav_bytes = 0;
+    endcase
+    if (picker_sav_bytes != 0 && RTC_inuse) picker_sav_bytes = picker_sav_bytes + 16;
+  end
+end
 logic [23:0] picker_rgb;
 
 data_loader #(
@@ -1261,10 +1288,23 @@ cover_picker cover_picker (
   .target_dataslot_length     ( target_dataslot_length     ),
   .target_dataslot_done       ( target_dataslot_done       ),
   .target_dataslot_err        ( target_dataslot_err        ),
+  .target_dataslot_write      ( target_dataslot_write      ),
   .bridge_rd                  ( bridge_rd                  ),
+  .bridge_wr                  ( bridge_wr                  ),
+  .bridge_wr_data             ( bridge_wr_data             ),
   .bridge_addr                ( bridge_addr                ),
   .bridge_endian_little       ( bridge_endian_little       ),
   .param_rd_data              ( picker_param_rd            ),
+  .pause_gb                   ( picker_pause               ),
+  .ss_start                   ( picker_ss_start            ),
+  .ss_load                    ( picker_ss_load             ),
+  .ss_start_ok                ( savestate_start_ok         ),
+  .ss_load_ok                 ( savestate_load_ok          ),
+  .sav_bytes                  ( picker_sav_bytes           ),
+  .ss_bytes                   ( savestate_size             ),
+  .ovl_dim                    ( picker_dim                 ),
+  .snd_open                   ( picker_snd_open            ),
+  .snd_close                  ( picker_snd_close           ),
   .menu_active                (                            ),
   .hold_gb                    ( picker_hold_gb             ),
   .picker_download            ( picker_download            ),
@@ -1278,6 +1318,12 @@ cover_picker cover_picker (
 );
 
 
+reg [1:0] picker_dim_v = 0;
+wire [7:0] dim_r = {2'b0, video_rgb_gb[23:18]} + {3'b0, video_rgb_gb[23:19]};
+wire [7:0] dim_g = {2'b0, video_rgb_gb[15:10]} + {3'b0, video_rgb_gb[15:11]};
+wire [7:0] dim_b = {2'b0, video_rgb_gb[7:2]}   + {3'b0, video_rgb_gb[7:3]} + 8'd8;
+always_ff @(posedge clk_vid) picker_dim_v <= {picker_dim_v[0], picker_dim};
+
 always_ff @(posedge clk_vid) begin
   video_hs_reg  <= 0;
   video_de_reg  <= 0;
@@ -1286,7 +1332,9 @@ always_ff @(posedge clk_vid) begin
   if (de) begin
     video_de_reg  <= 1;
 
-    video_rgb_reg <= picker_menu_on ? picker_rgb : video_rgb_gb;
+    video_rgb_reg <= picker_menu_on ? picker_rgb :
+                     picker_dim_v[1] ? {dim_r, dim_g, dim_b} :   // ~3/8 brightness, cool tint
+                     video_rgb_gb;
   end else if (de_prev && ~de) begin
     video_rgb_reg <= 24'h0;
   end
@@ -1348,9 +1396,11 @@ wire fastforward  = ff_en && cont1_key_s[9] && !ioctl_download;
 wire ff_on;
 wire sleep_savestate;
 reg paused;
+reg [1:0] picker_pause_s = 0;
 
 always_ff @(posedge clk_sys) begin
-  paused <= sleep_savestate;
+  picker_pause_s <= {picker_pause_s[0], picker_pause};
+  paused <= sleep_savestate | picker_pause_s[1];
 end
 
 speedcontrol speedcontrol

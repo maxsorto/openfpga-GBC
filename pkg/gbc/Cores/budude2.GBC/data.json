@@ -63,6 +63,16 @@
           "gbc",
           "gb"
         ]
+      },
+      {
+        "id": 102,
+        "name": "Suspend",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "sus"
+        ]
       }
     ]
   }
