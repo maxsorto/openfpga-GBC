@@ -47,7 +47,6 @@ def main():
     arts, entries, paths = [], [], []
     for rom in roms:
         stem = os.path.splitext(rom)[0]; path = f"/Assets/{a.platform}/common/{rom}"
-        if len(path.encode()) > 79: sys.exit(f"path too long (max 79 bytes): {path}")
         src = covers.get(stem.lower()); arts.append(Image.open(src) if src else placeholder(stem))
         flags = 1 if rom.lower().endswith(".gb") else 0
         base = f"/Saves/{a.platform}/common/{stem}"

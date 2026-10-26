@@ -1,0 +1,23 @@
+{
+  "name": "gbc-cover-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mac companion app that builds the cover pack for the Analogue Pocket GBC cover picker core.",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:web": "npm --workspace web run dev",
+    "build": "npm --workspace web run build",
+    "start": "npm run build && npm --workspace server run start",
+    "test": "npm --workspace server run test",
+    "typecheck": "npm --workspace server exec tsc -- --noEmit && npm --workspace web exec tsc -- -b"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
