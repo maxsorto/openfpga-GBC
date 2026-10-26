@@ -34,6 +34,8 @@ module tb_frame;
     wait (menu_active == 1); #3000;
     f = $fopen("menu_frame.ppm", "w"); $fwrite(f, "P6\n160 144\n255\n");
     @(posedge clk_vid); vs <= 1; @(posedge clk_vid); vs <= 0; repeat (4) @(posedge clk_vid);
+    // 16 blank lines after vsync, like the real timing
+    repeat (16) begin @(posedge clk_vid); hs <= 1; @(posedge clk_vid); hs <= 0; repeat (176) @(posedge clk_vid); end
     for (y = 0; y < 144; y = y + 1) begin
       @(posedge clk_vid); hs <= 1; @(posedge clk_vid); hs <= 0; repeat (8) @(posedge clk_vid);
       for (x = 0; x < 160; x = x + 1) begin
@@ -46,6 +48,6 @@ module tb_frame;
   end
   // capture: sample menu_rgb with the same 2-cycle lag the real output stage would see
   reg de_d1 = 0, de_d2 = 0, de_d3 = 0;
-  always @(posedge clk_vid) begin de_d1 <= de; de_d2 <= de_d1; de_d3 <= de_d2; if (de_d3 && f) $fwrite(f, "%c%c%c", menu_rgb[23:16], menu_rgb[15:8], menu_rgb[7:0]); end
+  always @(posedge clk_vid) begin de_d1 <= de; de_d2 <= de_d1; de_d3 <= de_d2; if (de && f) $fwrite(f, "%c%c%c", menu_rgb[23:16], menu_rgb[15:8], menu_rgb[7:0]); end
   initial begin #400_000_000 $display("TIMEOUT"); $finish; end
 endmodule

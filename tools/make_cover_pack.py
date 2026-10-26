@@ -5,6 +5,8 @@ Layout (little-endian):
   0      header  16 B : "GBCV" | ver u16 = 4 | count u16 | 64 u16 | 40 u16 | 4 pad
   16     thumb palette 512 B : 256 x RGB565, shared by every 40x40 preview
   528    entries count x 128 B : title char[40] | flags u8 (bit0 = original Game Boy) | pad[3] | size u32 | path char[80]
+  then   blobs, then path structs count x 3 x 256 B (v5): ROM path, .sav path, .sus (suspend) path, NUL padded,
+         read straight into the core's 0x0192 parameter struct
   528 + count*128  blobs, count x 6208 B : palette 512 B (RGB565) | center 64x64 8-bit indices | preview 40x40 8-bit indices
 Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
@@ -41,12 +43,16 @@ def main():
     roms = sorted(f for f in os.listdir(a.roms) if f.lower().endswith((".gbc", ".gb")))[:MAXN]
     if not roms: sys.exit("no ROMs found")
     covers = {os.path.splitext(f)[0].lower(): os.path.join(a.covers, f) for f in os.listdir(a.covers) if f.lower().endswith((".png", ".jpg", ".jpeg"))}
-    arts, entries = [], []
+    arts, entries, paths = [], [], []
     for rom in roms:
         stem = os.path.splitext(rom)[0]; path = f"/Assets/{a.platform}/common/{rom}"
         if len(path.encode()) > 79: sys.exit(f"path too long (max 79 bytes): {path}")
         src = covers.get(stem.lower()); arts.append(Image.open(src) if src else placeholder(stem))
         flags = 1 if rom.lower().endswith(".gb") else 0
+        base = f"/Saves/{a.platform}/common/{stem}"
+        for q in (path, base + ".sav", base + ".sus"):
+            if len(q.encode()) > 255: sys.exit(f"path too long: {q}")
+            paths.append(q.encode().ljust(256, b"\0"))
         entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(os.path.join(a.roms, rom)), path.encode()[:79]))
         print(f"{'cover ' if src else 'placeholder'}  {rom}")
     # shared preview palette: quantize a mosaic of every preview together
@@ -63,9 +69,9 @@ def main():
         tq = th.quantize(palette=tpal_img, dither=Image.Dither.FLOYDSTEINBERG)
         blobs.append(pal + bytes(c.getdata()) + bytes(tq.getdata()))
     with open(a.out, "wb") as f:
-        f.write(struct.pack("<4sHHHH4x", b"GBCV", 4, len(roms), CEN, TH))
+        f.write(struct.pack("<4sHHHH4x", b"GBCV", 5, len(roms), CEN, TH))
         f.write(b"".join(struct.pack("<H", rgb565(tpal[i:i+3])) for i in range(0, 768, 3)))
-        f.write(b"".join(entries)); f.write(b"".join(blobs))
+        f.write(b"".join(entries)); f.write(b"".join(blobs)); f.write(b"".join(paths))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()
