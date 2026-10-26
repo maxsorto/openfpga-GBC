@@ -5,6 +5,8 @@ import { IconCard, IconFolder, IconRefresh, IconSearch, IconWarn } from './Icons
 import { PickerModal } from './PickerModal';
 import { SourceMenu } from './SourceMenu';
 import { SyncModal } from './SyncModal';
+import { ThemeControl } from './ThemeControl';
+import { Board } from './Board';
 import { useVolumes } from './useVolumes';
 import { fmtDate, isVolumePath } from './util';
 
@@ -117,23 +119,38 @@ export function App() {
 
   return (
     <div className="app">
+      <Board />
+      <div className="shell-tint" aria-hidden="true" />
       <header className="titlebar">
         <div className="brand">
-          <img src="/icon.svg" alt="" width={26} height={26} />
+          <img src="/icon.svg" alt="" width={22} height={34} />
           <div>
             <div className="brand-name">Cover Picker</div>
-            <div className="brand-sub">for the Analogue Pocket GBC core</div>
+            <div className="brand-sub">For Analogue Pocket · GBC core</div>
           </div>
         </div>
         <div className="grow" />
+        <ThemeControl />
         <SourceMenu root={root} volumes={volumes} freeBytes={lib?.freeBytes ?? vol?.freeBytes ?? null} onPick={chooseRoot} />
-        <button className="primary sync-btn" disabled={!lib || included.length === 0 || cardGone} onClick={() => setSyncing(true)}>
-          Sync to Pocket
+        <button
+          className="a-button"
+          disabled={!lib || included.length === 0 || cardGone}
+          onClick={() => setSyncing(true)}
+          aria-label="Sync to Pocket"
+          title="Sync to Pocket"
+        >
+          <span className="a-cap" />
+          <span className="a-label">Sync</span>
         </button>
       </header>
+      <div className="stripes" aria-hidden="true">
+        <span />
+        <span />
+      </div>
 
       {!root && (
         <div className="empty">
+          <div className="empty-panel">
           <div className="empty-icon">
             <IconCard size={34} />
           </div>
@@ -147,6 +164,7 @@ export function App() {
           >
             <IconFolder /> Choose a folder…
           </button>
+          </div>
         </div>
       )}
 
@@ -173,8 +191,10 @@ export function App() {
               <div className="slots-text">
                 <strong>{included.length}</strong> of {lib?.maxGames ?? 31} slots
               </div>
-              <div className="slots-bar">
-                <div style={{ width: `${(included.length / (lib?.maxGames ?? 31)) * 100}%` }} />
+              <div className="slots-bar" aria-hidden="true">
+                {Array.from({ length: lib?.maxGames ?? 31 }, (_, i) => (
+                  <i key={i} className={i < included.length ? 'on' : ''} />
+                ))}
               </div>
             </div>
           </div>

@@ -126,16 +126,20 @@ export function PickerModal({ game, onClose, onSaved }: Props) {
 
         <div className="picker-body">
           <aside className="picker-side">
-            <div className="side-label">On the Pocket</div>
-            <div className="screen">
-              <img src={fittedUrl(effective, title.trim() || game.defaultTitle, 128)} alt="" width={256} height={256} />
-            </div>
-            <div className="screen-small-row">
-              <div className="screen small">
-                <img src={fittedUrl(effective, title.trim() || game.defaultTitle, 80)} alt="" width={80} height={80} />
+            <div className="bezel">
+              <div className="bezel-top">
+                <span className="bezel-lines" />
+                <span className="bezel-caption">On the Pocket</span>
+                <span className="bezel-lines" />
               </div>
-              <div className="screen-caption">
-                Center 128 by 128, list 80 by 80. Colors are reduced to the Pocket's 16 bit format.
+              <div className="screen">
+                <img src={fittedUrl(effective, title.trim() || game.defaultTitle, 128)} alt="" width={256} height={256} />
+              </div>
+              <div className="screen-small-row">
+                <div className="screen small">
+                  <img src={fittedUrl(effective, title.trim() || game.defaultTitle, 80)} alt="" width={80} height={80} />
+                </div>
+                <div className="screen-caption">128 px center<br />80 px list<br />16 bit color</div>
               </div>
             </div>
 
