@@ -1,64 +1,71 @@
 #!/usr/bin/env python3
-"""Build covers.bin for the GBC cover-picker core.
+"""Build covers.bin (format v4) for the GBC cover-picker core.
 
 Layout (little-endian):
-  header  : magic "GBCV" (4) | version u16 = 1 | count u16 | cover_w u16 | cover_h u16 | reserved (4)  = 16 bytes
-  entries : count x 128 bytes:  title char[44] (NUL padded, ASCII) | size u32 (ROM file size in bytes) | path char[80] (NUL padded, e.g. "/Assets/gbc/common/Pokemon - Crystal Version.gbc")
-  images  : count x (512 + cover_w*cover_h) bytes: 256-entry RGB565 palette, then 8-bit indices row-major
+  0      header  16 B : "GBCV" | ver u16 = 4 | count u16 | 64 u16 | 40 u16 | 4 pad
+  16     thumb palette 512 B : 256 x RGB565, shared by every 40x40 preview
+  528    entries count x 128 B : title char[40] | flags u8 (bit0 = original Game Boy) | pad[3] | size u32 | path char[80]
+  528 + count*128  blobs, count x 6208 B : palette 512 B (RGB565) | center 64x64 8-bit indices | preview 40x40 8-bit indices
+Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
-Usage: make_cover_pack.py --roms "/Volumes/Pocket/Assets/gbc/common" --covers ./covers --out covers.bin [--size 112]
-A cover image is matched to a ROM by file stem (Pokemon - Crystal Version.png -> Pokemon - Crystal Version.gbc).
-ROMs without a cover get a generated placeholder with the title text.
+Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
 """
 import argparse, os, struct, sys
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
 
-def rgb565(img):
-    out = bytearray()
-    for r, g, b in img.convert("RGB").getdata():
-        out += struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
-    return bytes(out)
+CEN, TH, MAXN = 64, 40, 31
 
-def placeholder(title, size):
-    img = Image.new("RGB", (size, size), (24, 24, 32))
-    d = ImageDraw.Draw(img)
-    try: font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 14)
+def rgb565(rgb): r, g, b = rgb; return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+def placeholder(title):
+    img = Image.new("RGB", (256, 256), (40, 48, 72)); d = ImageDraw.Draw(img)
+    try: font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 34)
     except Exception: font = ImageFont.load_default()
-    words, lines, cur = title.split(), [], ""
-    for w in words:
-        t = (cur + " " + w).strip()
-        if d.textlength(t, font=font) > size - 10 and cur: lines.append(cur); cur = w
-        else: cur = t
-    if cur: lines.append(cur)
-    y = size // 2 - 8 * len(lines)
-    for ln in lines[:5]:
-        d.text(((size - d.textlength(ln, font=font)) / 2, y), ln, fill=(230, 230, 230), font=font); y += 16
+    d.multiline_text((128, 128), "\n".join(title.split(" - ")), fill=(235, 235, 245), font=font, anchor="mm", align="center")
     return img
+
+def fit(img, size):
+    """Contain the art in a square, on a blurred and darkened 'cover' fill of itself."""
+    img = img.convert("RGB")
+    bg = img.copy(); s = max(size / bg.width, size / bg.height)
+    bg = bg.resize((max(1, round(bg.width * s)), max(1, round(bg.height * s))), Image.LANCZOS)
+    bg = bg.crop(((bg.width - size) // 2, (bg.height - size) // 2, (bg.width - size) // 2 + size, (bg.height - size) // 2 + size))
+    bg = ImageEnhance.Brightness(bg.filter(ImageFilter.GaussianBlur(size / 10))).enhance(0.45)
+    fg = img.copy(); fg.thumbnail((size, size), Image.LANCZOS)
+    fg = ImageEnhance.Sharpness(fg).enhance(1.4)
+    bg.paste(fg, ((size - fg.width) // 2, (size - fg.height) // 2)); return bg
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--roms", required=True); ap.add_argument("--covers", required=True)
-    ap.add_argument("--out", required=True); ap.add_argument("--size", type=int, default=96); ap.add_argument("--platform", default="gbc")
-    a = ap.parse_args()
-    roms = sorted(f for f in os.listdir(a.roms) if f.lower().endswith((".gbc", ".gb")))
+    ap.add_argument("--out", required=True); ap.add_argument("--platform", default="gbc"); a = ap.parse_args()
+    roms = sorted(f for f in os.listdir(a.roms) if f.lower().endswith((".gbc", ".gb")))[:MAXN]
     if not roms: sys.exit("no ROMs found")
     covers = {os.path.splitext(f)[0].lower(): os.path.join(a.covers, f) for f in os.listdir(a.covers) if f.lower().endswith((".png", ".jpg", ".jpeg"))}
-    entries, images = [], []
+    arts, entries = [], []
     for rom in roms:
-        stem = os.path.splitext(rom)[0]
-        path = f"/Assets/{a.platform}/common/{rom}"
+        stem = os.path.splitext(rom)[0]; path = f"/Assets/{a.platform}/common/{rom}"
         if len(path.encode()) > 79: sys.exit(f"path too long (max 79 bytes): {path}")
-        src = covers.get(stem.lower())
-        img = Image.open(src) if src else placeholder(stem, a.size)
-        img = img.convert("RGB"); img.thumbnail((a.size, a.size))
-        canvas = Image.new("RGB", (a.size, a.size), (0, 0, 0)); canvas.paste(img, ((a.size - img.width) // 2, (a.size - img.height) // 2))
-        entries.append(struct.pack("<44sI80s", stem.encode("ascii", "replace")[:43], os.path.getsize(os.path.join(a.roms, rom)), path.encode()[:79]))
-        q = canvas.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
-        pal = (q.getpalette() or [])[:768]; pal += [0] * (768 - len(pal))
-        pal565 = b"".join(struct.pack("<H", ((pal[i] >> 3) << 11) | ((pal[i+1] >> 2) << 5) | (pal[i+2] >> 3)) for i in range(0, 768, 3))
-        images.append(pal565 + bytes(q.getdata()))
+        src = covers.get(stem.lower()); arts.append(Image.open(src) if src else placeholder(stem))
+        flags = 1 if rom.lower().endswith(".gb") else 0
+        entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(os.path.join(a.roms, rom)), path.encode()[:79]))
         print(f"{'cover ' if src else 'placeholder'}  {rom}")
+    # shared preview palette: quantize a mosaic of every preview together
+    thumbs = [fit(im, TH) for im in arts]
+    mosaic = Image.new("RGB", (TH * len(thumbs), TH))
+    for i, t in enumerate(thumbs): mosaic.paste(t, (i * TH, 0))
+    tpal_img = mosaic.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+    tpal = (tpal_img.getpalette() or [])[:768]; tpal += [0] * (768 - len(tpal))
+    blobs = []
+    for im, th in zip(arts, thumbs):
+        c = fit(im, CEN).quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+        cp = (c.getpalette() or [])[:768]; cp += [0] * (768 - len(cp))
+        pal = b"".join(struct.pack("<H", rgb565(cp[i:i+3])) for i in range(0, 768, 3))
+        tq = th.quantize(palette=tpal_img, dither=Image.Dither.FLOYDSTEINBERG)
+        blobs.append(pal + bytes(c.getdata()) + bytes(tq.getdata()))
     with open(a.out, "wb") as f:
-        f.write(struct.pack("<4sHHHH4x", b"GBCV", 3, len(roms), a.size, a.size)); f.write(b"".join(entries)); f.write(b"".join(images))
+        f.write(struct.pack("<4sHHHH4x", b"GBCV", 4, len(roms), CEN, TH))
+        f.write(b"".join(struct.pack("<H", rgb565(tpal[i:i+3])) for i in range(0, 768, 3)))
+        f.write(b"".join(entries)); f.write(b"".join(blobs))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()
