@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build covers.bin (format v6) for the GBC cover-picker core.
+"""Build covers.bin (format v6, or v7 with --v7) for the GBC cover-picker core.
 
 Layout (little-endian):
   0      header  16 B : "GBCV" | ver u16 = 6 | count u16 | 128 u16 | 80 u16 | 4 pad
@@ -9,14 +9,16 @@ Layout (little-endian):
   then   path structs count x 3 x 256 B: ROM path, .sav path, .sus (suspend) path, NUL padded,
          read straight into the core's 0x0192 parameter struct
   then   one more 256 B path struct: the debug log, /Saves/<platform>/common/picker.log
+v7 (--v7): ver = 7, up to 2047 games, entries are title char[40] | flags u8 | pad[3] | size u32 | crc32 u32 |
+path char[76], and each blob is padded to 65536 B so the core can stream any cover by index.
 Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
 Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
 """
-import argparse, os, struct, sys
+import argparse, os, struct, sys, zlib
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
 
-CEN, TH, MAXN = 128, 80, 31
+CEN, TH, MAXN, MAXN7, STRIDE7 = 128, 80, 31, 2047, 65536
 
 def rgb565(rgb): r, g, b = rgb; return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
 
@@ -40,8 +42,10 @@ def fit(img, size):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--roms", required=True); ap.add_argument("--covers", required=True)
-    ap.add_argument("--out", required=True); ap.add_argument("--platform", default="gbc"); a = ap.parse_args()
-    roms = sorted(f for f in os.listdir(a.roms) if f.lower().endswith((".gbc", ".gb")))[:MAXN]
+    ap.add_argument("--out", required=True); ap.add_argument("--platform", default="gbc")
+    ap.add_argument("--v7", action="store_true", help="format v7: up to 2047 games, streamed covers"); a = ap.parse_args()
+    roms = sorted(f for f in os.listdir(a.roms) if f.lower().endswith((".gbc", ".gb")) and not f.startswith("._"))
+    roms = roms[:MAXN7 if a.v7 else MAXN]
     if not roms: sys.exit("no ROMs found")
     covers = {os.path.splitext(f)[0].lower(): os.path.join(a.covers, f) for f in os.listdir(a.covers) if f.lower().endswith((".png", ".jpg", ".jpeg"))}
     arts, entries, paths = [], [], []
@@ -53,7 +57,12 @@ def main():
         for q in (path, base + ".sav", base + ".sus"):
             if len(q.encode()) > 255: sys.exit(f"path too long: {q}")
             paths.append(q.encode().ljust(256, b"\0"))
-        entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(os.path.join(a.roms, rom)), path.encode()[:79]))
+        rp = os.path.join(a.roms, rom)
+        if a.v7:
+            crc = zlib.crc32(open(rp, "rb").read()) & 0xFFFFFFFF
+            entries.append(struct.pack("<40sB3xII76s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(rp), crc, path.encode()[:75]))
+        else:
+            entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(rp), path.encode()[:79]))
         print(f"{'cover ' if src else 'placeholder'}  {rom}")
     # v6: full-color RGB565 art, center CEN x CEN then preview TH x TH, row-major, little-endian words
     blobs = []
@@ -62,9 +71,11 @@ def main():
         blobs.append(b"".join(struct.pack("<H", rgb565(p)) for p in c.getdata()) +
                      b"".join(struct.pack("<H", rgb565(p)) for p in t.getdata()))
     with open(a.out, "wb") as f:
-        f.write(struct.pack("<4sHHHH4x", b"GBCV", 6, len(roms), CEN, TH))
+        f.write(struct.pack("<4sHHHH4x", b"GBCV", 7 if a.v7 else 6, len(roms), CEN, TH))
         f.write(bytes(512))
-        f.write(b"".join(entries)); f.write(b"".join(blobs)); f.write(b"".join(paths))
+        f.write(b"".join(entries))
+        f.write(b"".join(b.ljust(STRIDE7, b"\0") for b in blobs) if a.v7 else b"".join(blobs))
+        f.write(b"".join(paths))
         f.write(f"/Saves/{a.platform}/common/picker.log".encode().ljust(256, b"\0"))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 

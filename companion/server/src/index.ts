@@ -5,13 +5,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CACHE_DIR, DATA_DIR, PORT, ensureDirs } from './config.js';
-import { fittedPreview, saveCustomArt } from './art.js';
+import { artStatus, fittedPreview, saveCustomArt, warmArt, type ArtWarmItem } from './art.js';
 import { isArtRef, updateChoices, type ArtRef, type ChoicePatch } from './choices.js';
 import { smallJpeg } from './image.js';
 import { buildLibrary } from './library.js';
 import { search } from './match.js';
 import { run } from './proc.js';
 import { getJob, startSync, type SyncEvent } from './sync.js';
+import { makePlan } from './plan.js';
+import { loadSettings, saveSettings } from './settings.js';
 import { getBoxart, loadThumbs, REPOS } from './thumbs.js';
 import { ejectVolume, listVolumes } from './volumes.js';
 import { loadDats } from './dat.js';
@@ -32,11 +34,46 @@ app.get('/api/health', (c) => c.json({ ok: true, dataDir: DATA_DIR, cacheDir: CA
 
 app.get('/api/volumes', async (c) => c.json({ volumes: await listVolumes() }));
 
-app.get('/api/library', async (c) => {
-  const root = c.req.query('root');
-  if (!root) return fail(c, 'Missing root');
+app.get('/api/settings', (c) => c.json(loadSettings()));
+
+app.post('/api/settings', async (c) => {
   try {
-    return c.json(await buildLibrary(root));
+    const body = await c.req.json<{ libraryRoot?: string | null }>();
+    return c.json(saveSettings({ libraryRoot: body.libraryRoot ? String(body.libraryRoot) : null }));
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/** The library (the Mac folder from settings, or the card's ROMs) and what is on the card. */
+app.get('/api/library', async (c) => {
+  const card = c.req.query('card') || null;
+  const library = loadSettings().libraryRoot;
+  if (!card && !library) return fail(c, 'Choose a library folder or a card');
+  try {
+    return c.json(await buildLibrary({ library, card }));
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/** Fetch and fit the grid art for many games, a few at a time, in the background. */
+app.post('/api/art/warm', async (c) => {
+  const body = await c.req.json<{ items?: ArtWarmItem[] }>();
+  const items = (Array.isArray(body?.items) ? body.items : [])
+    .filter((it) => it && typeof it.title === 'string' && (it.ref === null || isArtRef(it.ref)))
+    .slice(0, 20000);
+  return c.json(warmArt(items));
+});
+
+app.get('/api/art/status', (c) => c.json(artStatus()));
+
+app.get('/api/plan', async (c) => {
+  const card = c.req.query('card');
+  if (!card) return fail(c, 'Missing card');
+  try {
+    const { plan } = await makePlan({ library: loadSettings().libraryRoot, card });
+    return c.json(plan);
   } catch (e) {
     return fail(c, e);
   }
@@ -127,16 +164,21 @@ app.post('/api/custom-art', async (c) => {
 
 /** Native macOS folder picker. */
 app.post('/api/choose-folder', async (c) => {
-  const res = await run('osascript', ['-e', 'POSIX path of (choose folder with prompt "Choose your Pocket SD card or a test folder")']);
+  const body = await c.req.json<{ purpose?: string }>().catch(() => ({ purpose: undefined }));
+  const prompt = body?.purpose === 'library' ? 'Choose the folder with your ROMs' : 'Choose your Pocket SD card or a test folder';
+  const res = await run('osascript', ['-e', `POSIX path of (choose folder with prompt "${prompt}")`]);
   if (res.code !== 0) return c.json({ cancelled: true });
   return c.json({ path: res.stdout.trim().replace(/\/$/, '') || '/' });
 });
 
 app.post('/api/sync', async (c) => {
-  const body = await c.req.json<{ root?: string; ids?: string[] }>();
-  if (!body?.root) return fail(c, 'Missing root');
-  if (!Array.isArray(body.ids) || !body.ids.length) return fail(c, 'No games selected');
-  return c.json({ jobId: startSync(body.root, body.ids).id });
+  const body = await c.req.json<{ card?: string; signature?: string }>();
+  if (!body?.card) return fail(c, 'Missing card');
+  try {
+    return c.json({ jobId: startSync({ library: loadSettings().libraryRoot, card: body.card, signature: body.signature }).id });
+  } catch (e) {
+    return fail(c, e);
+  }
 });
 
 app.get('/api/sync/:id/stream', (c) => {

@@ -4,7 +4,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BOXART_DIR, GITHUB_TOKEN, TREE_DIR, TREE_MAX_AGE_MS } from './config.js';
+import { ART_CONCURRENCY, BOXART_DIR, GITHUB_TOKEN, TREE_DIR, TREE_MAX_AGE_MS } from './config.js';
+import { Limiter, type Lane } from './limit.js';
 import { cachedDownload, fetchBuffer, type CachedFile } from './net.js';
 import { isPng } from './image.js';
 
@@ -84,36 +85,51 @@ function rawUrl(repo: string, relPath: string): string {
 }
 
 const inflight = new Map<string, Promise<Buffer>>();
+const downloads = new Limiter(ART_CONCURRENCY);
+
+/** True when this box art is already on disk. */
+export function boxartCached(repo: string, name: string): boolean {
+  return fs.existsSync(boxartFile(repo, name));
+}
 
 /**
  * The PNG for one thumbnail, from the cache or GitHub. Some entries in the
  * repos are git symlinks; the raw URL then returns the link target as text,
- * which we follow.
+ * which we follow. Downloads share one queue: at most ART_CONCURRENCY run at
+ * once, and "high" requests (covers on screen) go before "low" ones (the
+ * background fetch of the whole library).
  */
-export function getBoxart(repo: string, name: string): Promise<Buffer> {
+export function getBoxart(repo: string, name: string, lane: Lane = 'high'): Promise<Buffer> {
   if (!REPOS.some((r) => r.repo === repo)) return Promise.reject(new Error('Unknown thumbnail repo'));
   if (name.includes('/') || name.includes('\0')) return Promise.reject(new Error('Bad thumbnail name'));
   const file = boxartFile(repo, name);
   if (fs.existsSync(file)) return Promise.resolve(fs.readFileSync(file));
   const key = `${repo}/${name}`;
   const running = inflight.get(key);
-  if (running) return running;
-  const p = (async () => {
-    let rel = `Named_Boxarts/${name}.png`;
-    for (let hop = 0; hop < 4; hop++) {
-      const buf = await fetchBuffer(rawUrl(repo, rel));
-      if (isPng(buf)) {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, buf);
-        return buf;
+  if (running) {
+    if (lane === 'high') downloads.promote(key);
+    return running;
+  }
+  const p = downloads
+    .run(key, lane, async () => {
+      let rel = `Named_Boxarts/${name}.png`;
+      for (let hop = 0; hop < 4; hop++) {
+        const buf = await fetchBuffer(rawUrl(repo, rel));
+        if (isPng(buf)) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          const tmp = `${file}.${process.pid}.tmp`;
+          fs.writeFileSync(tmp, buf);
+          fs.renameSync(tmp, file);
+          return buf;
+        }
+        const target = buf.toString('utf8').trim();
+        if (buf.length > 512 || !target.endsWith('.png')) throw new Error(`Not an image: ${key}`);
+        rel = path.posix.normalize(path.posix.join(path.posix.dirname(rel), target));
+        if (rel.startsWith('..')) throw new Error(`Bad link in ${key}`);
       }
-      const target = buf.toString('utf8').trim();
-      if (buf.length > 512 || !target.endsWith('.png')) throw new Error(`Not an image: ${key}`);
-      rel = path.posix.normalize(path.posix.join(path.posix.dirname(rel), target));
-      if (rel.startsWith('..')) throw new Error(`Bad link in ${key}`);
-    }
-    throw new Error(`Too many links for ${key}`);
-  })().finally(() => inflight.delete(key));
+      throw new Error(`Too many links for ${key}`);
+    })
+    .finally(() => inflight.delete(key));
   inflight.set(key, p);
   return p;
 }

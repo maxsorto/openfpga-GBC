@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { OFFLINE } from './config.js';
 
 /** fetch with a timeout. Throws on network errors and non-2xx responses. */
 export async function fetchBuffer(url: string, headers: Record<string, string> = {}, timeoutMs = 30000): Promise<Buffer> {
+  if (OFFLINE) throw new Error('Offline mode');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {

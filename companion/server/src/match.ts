@@ -43,20 +43,38 @@ export function nameKey(name: string): string {
     .trim();
 }
 
-export function similarity(a: string, b: string): number {
+interface Prepared {
+  key: string;
+  tokens: Set<string>;
+  /** Sum of token lengths. */
+  len: number;
+}
+
+function prepare(key: string): Prepared {
+  const tokens = new Set(key.split(' '));
+  let len = 0;
+  for (const t of tokens) len += t.length;
+  return { key, tokens, len };
+}
+
+function similarityPrepared(pa: Prepared, pb: Prepared): number {
+  const a = pa.key;
+  const b = pb.key;
   if (!a || !b) return 0;
   if (a === b) return 1;
   // Overlap of words, weighted by word length so "2" or "dx" count for little.
-  const ta = new Set(a.split(' '));
-  const tb = new Set(b.split(' '));
-  const len = (s: Set<string>) => [...s].reduce((n, t) => n + t.length, 0);
-  const common = [...ta].filter((t) => tb.has(t)).reduce((n, t) => n + t.length, 0);
-  const overlap = (2 * common) / (len(ta) + len(tb));
+  let common = 0;
+  for (const t of pa.tokens) if (pb.tokens.has(t)) common += t.length;
+  const overlap = (2 * common) / (pa.len + pb.len);
   const [short, long] = a.length < b.length ? [a, b] : [b, a];
   const ratio = short.length / long.length;
   const prefix = long.startsWith(short + ' ') ? 0.6 + 0.4 * ratio : 0;
   const contains = ` ${long} `.includes(` ${short} `) ? 0.45 + 0.4 * ratio : 0;
   return Math.max(overlap, prefix, contains);
+}
+
+export function similarity(a: string, b: string): number {
+  return similarityPrepared(prepare(a), prepare(b));
 }
 
 /** Small tie breakers between thumbnails of the same game. */
@@ -73,14 +91,14 @@ function preference(t: Thumb, system: 'gb' | 'gbc'): number {
 
 interface Keyed {
   t: Thumb;
-  key: string;
+  p: Prepared;
 }
 
 let keyCache: { src: Thumb[]; keyed: Keyed[] } | null = null;
 
 function keyed(index: ThumbIndex): Keyed[] {
   if (keyCache?.src !== index.thumbs) {
-    keyCache = { src: index.thumbs, keyed: index.thumbs.map((t) => ({ t, key: nameKey(t.name) })) };
+    keyCache = { src: index.thumbs, keyed: index.thumbs.map((t) => ({ t, p: prepare(nameKey(t.name)) })) };
   }
   return keyCache.keyed;
 }
@@ -88,9 +106,10 @@ function keyed(index: ThumbIndex): Keyed[] {
 export function search(index: ThumbIndex, query: string, system: 'gb' | 'gbc', limit = 60): { thumb: Thumb; score: number }[] {
   const q = nameKey(query);
   if (!q) return [];
+  const pq = prepare(q);
   const out: { thumb: Thumb; score: number }[] = [];
   for (const k of keyed(index)) {
-    const s = similarity(q, k.key);
+    const s = similarityPrepared(pq, k.p);
     if (s >= 0.3) out.push({ thumb: k.t, score: s + preference(k.t, system) });
   }
   out.sort((a, b) => b.score - a.score || a.thumb.name.localeCompare(b.thumb.name));
@@ -99,6 +118,20 @@ export function search(index: ThumbIndex, query: string, system: 'gb' | 'gbc', l
 
 /** Auto threshold: below this a name match is not trusted. */
 export const GUESS_THRESHOLD = 0.75;
+
+let matchMemo: { src: ThumbIndex['thumbs']; map: Map<string, AutoMatch> } | null = null;
+
+/** autoMatch, remembered per thumbnail list, so rescanning a big library is quick. */
+export function autoMatchCached(index: ThumbIndex, romStem: string, system: 'gb' | 'gbc', dat: DatGame | undefined): AutoMatch {
+  if (matchMemo?.src !== index.thumbs) matchMemo = { src: index.thumbs, map: new Map() };
+  const key = `${system}|${dat?.name ?? ''}|${dat?.system ?? ''}|${romStem}`;
+  let m = matchMemo.map.get(key);
+  if (!m) {
+    m = autoMatch(index, romStem, system, dat);
+    matchMemo.map.set(key, m);
+  }
+  return m;
+}
 
 export function autoMatch(index: ThumbIndex, romStem: string, system: 'gb' | 'gbc', dat: DatGame | undefined): AutoMatch {
   if (dat) {

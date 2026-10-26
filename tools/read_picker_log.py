@@ -4,7 +4,7 @@
 The core keeps a ring of 511 eight-byte records and writes it to that file after the menu has sat idle for 3 s
 following boot or Home. Record 0 is a header ("PLOG", next write slot, total records written). Each record is
 tag (S, D or Q), time in units of 4096 cycles of the 74.25 MHz clock, and 32 bits of data:
-  S  state change: new state, previous state, last data slot error, open error, transfer error, game index
+  S  state change: new state, previous state, last data slot error, open error, game index
   D  diagnostic bits changed (the same bits as the squares along the top of the menu)
   Q  SDRAM sample: the pixel fetched for screen (160, 100) and the low 16 bits of its row base address
 
@@ -50,9 +50,9 @@ def main():
         hi, lo = recs[i]
         tag, t = chr(hi >> 24), (hi & 0xFFFFFF) * TICK_MS
         if tag == "S":
-            new, old = lo >> 24 & 0x7F, lo >> 16 & 0x7F
-            terr, oerr, xerr, idx = lo >> 13 & 7, lo >> 10 & 7, lo >> 7 & 7, lo & 31
-            print(f"{t:10.2f} ms  S  {st(old)} -> {st(new)}  game {idx}  slot_err {terr} open_err {oerr} xfer_err {xerr}")
+            new, old = lo >> 25 & 0x7F, lo >> 18 & 0x7F
+            terr, oerr, idx = lo >> 15 & 7, lo >> 12 & 7, lo & 0x7FF
+            print(f"{t:10.2f} ms  S  {st(old)} -> {st(new)}  game {idx}  slot_err {terr} open_err {oerr}")
         elif tag == "D":
             print(f"{t:10.2f} ms  D  {lo & 0xFFFFFF:06x}  [{bits(lo)}]")
         elif tag == "Q":

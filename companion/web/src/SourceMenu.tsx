@@ -34,6 +34,7 @@ export function SourceMenu({ root, volumes, freeBytes, onPick }: Props) {
   };
 
   const label = root ? (vol ? vol.name : basename(root)) : 'No card';
+  const free = root ? (freeBytes ?? vol?.freeBytes ?? null) : null;
   const dot = root ? (vol?.isPocket ? 'ok' : 'folder') : 'off';
 
   return (
@@ -42,7 +43,7 @@ export function SourceMenu({ root, volumes, freeBytes, onPick }: Props) {
         <span className={`dot ${dot}`} />
         {vol ? <IconCard /> : root ? <IconFolder /> : <IconCard />}
         <span className="source-name">{label}</span>
-        {root && freeBytes != null && <span className="source-free">{fmtBytes(freeBytes)} free</span>}
+        {free != null && <span className="source-free">{fmtBytes(free)} free</span>}
         <IconChevron className="chev" />
       </button>
       {open && (
@@ -69,7 +70,7 @@ export function SourceMenu({ root, volumes, freeBytes, onPick }: Props) {
             className="menu-item"
             onClick={async () => {
               setOpen(false);
-              const r = await api.chooseFolder();
+              const r = await api.chooseFolder('card');
               if (r.path) onPick(r.path);
             }}
           >
@@ -85,7 +86,7 @@ export function SourceMenu({ root, volumes, freeBytes, onPick }: Props) {
           >
             <input type="text" placeholder="Or type a path, then Return" value={typed} onChange={(e) => setTyped(e.target.value)} />
           </form>
-          <div className="menu-hint">A folder works like a card if it has Assets/gbc/common inside.</div>
+          <div className="menu-hint">Sync copies ROMs into Assets/gbc/common. Any folder with that layout works for testing.</div>
         </div>
       )}
     </div>

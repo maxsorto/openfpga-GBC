@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { fittedUrl, type Game } from './api';
-import { IconCheck, IconPencil, IconWarn } from './Icons';
+import { IconPencil, IconStar, IconWarn } from './Icons';
 
 export const STATUS_LABEL: Record<Game['status'], string> = {
   exact: 'Exact',
@@ -20,13 +20,38 @@ export const STATUS_HINT: Record<Game['status'], string> = {
 
 interface Props {
   game: Game;
-  canInclude: boolean;
-  onOpen: () => void;
-  onToggle: (include: boolean) => void;
-  onRename: (title: string) => void;
+  /** Place in the Pocket menu, counting from 1. Shown in the Pocket view only. */
+  position?: number | null;
+  /** Past what today's core shows. */
+  beyondLimit?: boolean;
+  onOpen: (g: Game) => void;
+  onFavorite: (g: Game, on: boolean) => void;
+  onRename: (g: Game, title: string) => void;
 }
 
-export function GameCard({ game, canInclude, onOpen, onToggle, onRename }: Props) {
+/** The cover image. Shows a quiet well while it loads, and a title card if the art fails. */
+function Cover({ game }: { game: Game }) {
+  const src = fittedUrl(game.art, game.title);
+  const [state, setState] = useState<{ src: string; loaded: boolean; failed: boolean }>({ src, loaded: false, failed: false });
+  const current = state.src === src ? state : { src, loaded: false, failed: false };
+  const shown = current.failed ? fittedUrl(null, game.title) : src;
+  return (
+    <img
+      key={shown}
+      className={current.loaded ? 'loaded' : ''}
+      src={shown}
+      alt=""
+      width={128}
+      height={128}
+      draggable={false}
+      decoding="async"
+      onLoad={() => setState({ ...current, loaded: true })}
+      onError={() => !current.failed && setState({ src, loaded: false, failed: true })}
+    />
+  );
+}
+
+function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRename }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(game.title);
   const input = useRef<HTMLInputElement>(null);
@@ -41,26 +66,33 @@ export function GameCard({ game, canInclude, onOpen, onToggle, onRename }: Props
   const commit = () => {
     setEditing(false);
     const t = draft.trim();
-    if (t && t !== game.title) onRename(t);
+    if (t && t !== game.title) onRename(game, t);
   };
 
   const blocked = game.problems.length > 0;
-  const toggleDisabled = blocked || (!game.included && !canInclude);
+  const fileTitle = game.renamed ? `${game.file} on the card. In the library: ${game.paths.join(', ')}` : game.paths.join('\n');
 
   return (
-    <div className={`card ${game.included ? '' : 'excluded'}`}>
+    <div className={`card ${game.favorite ? 'fav' : ''} ${beyondLimit ? 'beyond' : ''}`}>
       <div className="cover-wrap">
-        <button className="cover" onClick={onOpen} title="Change cover">
-          <img src={fittedUrl(game.art, game.title)} alt="" width={128} height={128} draggable={false} />
+        <button className="cover" onClick={() => onOpen(game)} title="Change cover">
+          <Cover game={game} />
           <span className="cover-hover">Change cover</span>
         </button>
-        <label
-          className={`include ${game.included ? 'on' : ''} ${toggleDisabled ? 'disabled' : ''}`}
-          title={blocked ? game.problems.join(' ') : !game.included && !canInclude ? 'All 31 slots are in use' : game.included ? 'On the Pocket' : 'Not on the Pocket'}
+        <button
+          className={`star ${game.favorite ? 'on' : ''}`}
+          aria-pressed={game.favorite}
+          aria-label={game.favorite ? `Unfavorite ${game.title}` : `Favorite ${game.title}`}
+          title={game.favorite ? 'Unfavorite' : 'Favorite'}
+          onClick={() => onFavorite(game, !game.favorite)}
         >
-          <input type="checkbox" checked={game.included} disabled={toggleDisabled} onChange={(e) => onToggle(e.target.checked)} />
-          <span className="box">{game.included && <IconCheck size={12} />}</span>
-        </label>
+          <IconStar on={game.favorite} size={13} />
+        </button>
+        {position != null && (
+          <span className="slot-no" title={beyondLimit ? 'On the card. Today\'s core shows the first 31.' : 'Shown on the Pocket today'}>
+            {String(position).padStart(2, '0')}
+          </span>
+        )}
       </div>
       <div className="card-body">
         {editing ? (
@@ -96,12 +128,19 @@ export function GameCard({ game, canInclude, onOpen, onToggle, onRename }: Props
             </span>
           )}
           <span className="sys">{game.isGb ? 'GB' : 'GBC'}</span>
+          {game.paths.length > 1 && (
+            <span className="sys" title={`Same ROM ${game.paths.length} times in the library:\n${game.paths.join('\n')}`}>
+              x{game.paths.length}
+            </span>
+          )}
           {game.titleBytes > 39 && <span className="sys warn" title="Titles are cut to 39 characters on the Pocket">39+</span>}
         </div>
-        <div className="file" title={game.file}>
+        <div className="file" title={fileTitle}>
           {game.file}
         </div>
       </div>
     </div>
   );
 }
+
+export const GameCard = memo(GameCardImpl);

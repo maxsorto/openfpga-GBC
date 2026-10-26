@@ -293,8 +293,12 @@ body {
 .side-label,
 .menu-label,
 .bezel-caption,
-.slots-text,
 .result-sys,
+.tile-label,
+.meter-text,
+.slot-no,
+.section-note,
+.cutoff-text,
 .theme-pill button {
   font-family: var(--pixel);
   font-weight: 400;
@@ -712,44 +716,9 @@ code {
   font-size: 8px;
   opacity: 0.85;
 }
-.slots {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-.slots-text {
-  font-size: 8px;
-  color: var(--ink-dim);
-}
-.slots-text strong {
-  color: var(--ink);
-  font-weight: 400;
-}
-/* A battery style meter in 31 cells. */
-.slots-bar {
-  display: flex;
-  gap: 1px;
-  padding: 2px;
-  border: 1px solid var(--edge);
-  border-radius: 2px;
-  background: var(--field-bg);
-}
-.slots-bar i {
-  display: block;
-  width: 3px;
-  height: 8px;
-  background: var(--line);
-}
-.slots-bar i.on {
-  background: var(--accent);
-}
-[data-theme='dmg'] .slots-bar i.on {
-  background: var(--primary);
-}
-
 /* Content */
 .content {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 6px 22px 34px;
@@ -797,13 +766,8 @@ code {
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  transition: opacity 0.15s;
-}
-.card.excluded {
-  opacity: 0.45;
-}
-.card.excluded .cover img {
-  filter: grayscale(0.7);
+  /* Fixed, so the virtual grid knows every row's height. ROW_H in App.tsx is this plus the gap. */
+  height: 256px;
 }
 .cover-wrap {
   position: relative;
@@ -831,6 +795,13 @@ code {
   image-rendering: pixelated;
   border-radius: 1px;
   box-shadow: 0 0 0 1px rgba(var(--shade), 0.35);
+  /* While the art loads: an empty screen. */
+  background: var(--screen);
+  opacity: 0.35;
+  transition: opacity 0.18s;
+}
+.cover img.loaded {
+  opacity: 1;
 }
 .cover-hover {
   position: absolute;
@@ -851,43 +822,6 @@ code {
 .cover:hover .cover-hover,
 .cover:focus-visible .cover-hover {
   opacity: 1;
-}
-.include {
-  position: absolute;
-  top: -6px;
-  left: -6px;
-  cursor: pointer;
-}
-.include input {
-  position: absolute;
-  opacity: 0;
-  width: 1px;
-  height: 1px;
-}
-.include .box {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--shell-hi);
-  border: 1px solid var(--edge);
-  color: var(--accent-ink);
-}
-.include.on .box {
-  background: var(--accent);
-  border-color: var(--accent-edge);
-  box-shadow: inset 0 -2px 2px rgba(0, 0, 0, 0.22), 0 1px 0 var(--accent-edge);
-}
-.include input:focus-visible + .box {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.include.disabled {
-  cursor: not-allowed;
-}
-.include.disabled .box {
-  opacity: 0.5;
 }
 .card-body {
   width: 150px;
@@ -916,6 +850,7 @@ code {
   transform: none;
 }
 .title-text {
+  min-height: 2.5em;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1625,4 +1560,423 @@ code {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 18px 40px rgba(0, 0, 0, 0.3);
   -webkit-backdrop-filter: blur(6px) saturate(120%);
   backdrop-filter: blur(6px) saturate(120%);
+}
+
+/* ---------- Library and Pocket views ---------- */
+
+/* View switch: two big labels in a recessed well, like the theme pill but sized for reading. */
+.views {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-left: 18px;
+  border-radius: 999px;
+  background: var(--shell-deep);
+  box-shadow: var(--well-shadow);
+}
+.views button {
+  border: none;
+  box-shadow: none;
+  background: none;
+  color: var(--ink-dim);
+  font-size: 14px;
+  font-weight: 600;
+  font-style: italic;
+  padding: 6px 16px 6px 15px;
+}
+.views button:hover:not(:disabled) {
+  background: none;
+  color: var(--ink);
+}
+.views button.on {
+  background: var(--seg-on-bg);
+  color: var(--seg-on-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 1px 0 rgba(var(--shade), 0.35);
+}
+.views button:active:not(:disabled) {
+  transform: none;
+}
+.views .count {
+  font-size: 8px;
+  font-style: normal;
+  opacity: 0.85;
+}
+
+/* Virtual grid */
+.vgrid {
+  position: relative;
+  margin-top: 6px;
+}
+.vgrid-row,
+.vgrid-cards {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.vgrid-cards {
+  display: grid;
+  align-items: start;
+}
+.vgrid-cell {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* Favorite star: a small round button on the label well, like the Pocket's home button. */
+.star {
+  position: absolute;
+  top: -7px;
+  left: -7px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--shell-hi);
+  border: 1px solid var(--edge);
+  color: var(--ink-dim);
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s;
+}
+.card:hover .star,
+.star:focus-visible,
+.star.on {
+  opacity: 1;
+}
+.star.on {
+  background: var(--accent);
+  border-color: var(--accent-edge);
+  color: var(--accent-ink);
+  box-shadow: inset 0 -2px 2px rgba(0, 0, 0, 0.22), 0 1px 0 var(--accent-edge);
+}
+[data-theme='dmg'] .star.on {
+  background: var(--primary);
+  border-color: var(--primary-edge);
+  color: var(--primary-ink);
+  box-shadow: inset 0 -2px 2px rgba(0, 0, 0, 0.22), 0 1px 0 var(--primary-press);
+}
+.star:hover:not(:disabled) {
+  color: var(--ink);
+}
+.star.on:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent);
+  filter: brightness(1.06);
+}
+[data-theme='dmg'] .star.on:hover:not(:disabled) {
+  color: var(--primary-ink);
+  background: var(--primary-hover);
+}
+.star:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Menu position in the Pocket view, stamped on the well like a cart number. */
+.slot-no {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  font-size: 8px;
+  line-height: 1;
+  padding: 4px 5px 3px;
+  border-radius: 2px;
+  background: var(--bezel);
+  color: var(--bezel-ink);
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.card.beyond .slot-no {
+  background: var(--shell-hi);
+  color: var(--ink-dim);
+  border-color: var(--line-strong);
+}
+
+/* Section headers in the Pocket view */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 100%;
+  padding-top: 10px;
+}
+.section-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  font-style: italic;
+  color: var(--title);
+  white-space: nowrap;
+}
+.section-head .count {
+  font-family: var(--pixel);
+  font-size: 9px;
+  padding: 3px 5px 2px;
+  border-radius: 2px;
+  background: var(--shell-deep);
+  color: var(--ink);
+  box-shadow: var(--well-shadow);
+}
+.section-star {
+  color: var(--primary);
+}
+[data-theme='gbc'] .section-star {
+  color: var(--accent);
+}
+.section-note {
+  font-size: 8px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.section-rule {
+  flex: 1;
+  min-width: 20px;
+  height: var(--stripe-h);
+  background: var(--stripe);
+  opacity: 0.55;
+}
+
+/* Where today's core stops. */
+.cutoff {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 100%;
+  padding-bottom: 22px;
+}
+.cutoff-line {
+  flex: 1;
+  border-top: 2px dashed var(--line-strong);
+}
+.cutoff-text {
+  font-size: 8px;
+  color: var(--ink);
+  text-align: center;
+  max-width: 560px;
+  line-height: 1.6;
+  padding: 6px 10px 5px;
+  border-radius: 3px;
+  background: var(--shell-deep);
+  box-shadow: var(--well-shadow);
+}
+
+/* Toolbar meters: art progress and card space. */
+.meter-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 150px;
+}
+.meter-text {
+  font-size: 8px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.meter-text strong {
+  color: var(--ink);
+  font-weight: 400;
+}
+.mini-bar {
+  width: 150px;
+  height: 12px;
+  padding: 2px;
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+  background: var(--field-bg);
+}
+.mini-bar i {
+  display: block;
+  height: 100%;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 3px, transparent 3px 4px);
+  transition: width 0.3s;
+}
+[data-theme='dmg'] .mini-bar i {
+  background: repeating-linear-gradient(90deg, var(--primary) 0 3px, transparent 3px 4px);
+}
+.mini-bar.over i {
+  background: repeating-linear-gradient(90deg, var(--error) 0 3px, transparent 3px 4px);
+}
+
+.banner.info svg {
+  color: var(--title);
+}
+.empty-alt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  margin: 10px 0 0 !important;
+}
+.menu-path-now {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 2px 8px 8px;
+  word-break: break-all;
+}
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ---------- Sync plan ---------- */
+.sync {
+  width: min(640px, 100%);
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.tile {
+  padding: 10px 12px 9px;
+  border-radius: var(--radius-well);
+  background: var(--shell-deep);
+  box-shadow: var(--well-shadow);
+  min-width: 0;
+}
+.tile-label {
+  font-size: 8px;
+  color: var(--ink-dim);
+}
+.tile-value {
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 4px;
+}
+.tile-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.tile.warn .tile-value {
+  color: var(--warn);
+}
+.tile.dim .tile-value {
+  color: var(--ink-dim);
+}
+.space {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.space-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.space-text .dim {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.space.short .bar div {
+  background: repeating-linear-gradient(90deg, var(--error) 0 6px, transparent 6px 7px);
+}
+.plan-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-lists details {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--shell-hi);
+}
+.plan-lists summary {
+  cursor: pointer;
+  padding: 7px 12px;
+  font-weight: 500;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+.plan-lists summary::-webkit-details-marker {
+  display: none;
+}
+.plan-lists summary::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--ink-dim);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.12s;
+}
+.plan-lists details[open] summary::before {
+  transform: rotate(90deg);
+}
+.plan-lists .count {
+  font-size: 8px;
+  color: var(--ink-dim);
+}
+.plan-list {
+  list-style: none;
+  margin: 0 8px 8px;
+  padding: 6px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--shell-deep);
+  box-shadow: var(--well-shadow);
+  border-radius: 4px;
+  font-size: 12.5px;
+}
+.plan-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.plan-lists .sync-list {
+  margin: 0 8px 8px;
+}
+.plan-note {
+  margin: 0 12px 6px !important;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.plan-foot {
+  font-size: 12px;
+}
+.now {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.now-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.step-note {
+  margin-left: auto;
+}
+.steps li.skip {
+  color: var(--ink-dim);
+  opacity: 0.7;
+}
+.steps li.skip .step-mark {
+  border-style: dashed;
+}
+
+[data-theme='gbc'][data-shell='atomic'] .tile,
+[data-theme='gbc'][data-shell='atomic'] .section-head .count,
+[data-theme='gbc'][data-shell='atomic'] .cutoff-text {
+  background: rgba(62, 51, 97, 0.88);
+}
+[data-theme='gbc'][data-shell='atomic'] .views {
+  background: rgba(62, 51, 97, 0.9);
 }

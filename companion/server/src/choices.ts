@@ -11,6 +11,9 @@ export type ArtRef =
 export interface Choice {
   title?: string;
   art?: ArtRef;
+  /** Starred. Favorites come first on the Pocket, after recently played games. */
+  favorite?: boolean;
+  /** From the 31 slot version. Kept in the file but no longer used. */
   include?: boolean;
   updatedAt?: string;
 }
@@ -19,6 +22,8 @@ interface ChoicesFile {
   version: 1;
   games: Record<string, Choice>;
 }
+
+const CRC_RE = /^[0-9A-F]{8}$/;
 
 export function loadChoices(): ChoicesFile {
   try {
@@ -51,12 +56,13 @@ export interface ChoicePatch {
   title?: string | null;
   art?: ArtRef | null;
   include?: boolean | null;
+  favorite?: boolean | null;
 }
 
 export function updateChoices(patches: Record<string, ChoicePatch>): void {
   const f = loadChoices();
   for (const [crc, patch] of Object.entries(patches)) {
-    if (!/^[0-9A-F]{8}$/.test(crc)) throw new Error(`Bad CRC: ${crc}`);
+    if (!CRC_RE.test(crc)) throw new Error(`Bad CRC: ${crc}`);
     const c: Choice = { ...(f.games[crc] ?? {}) };
     if (patch.title === null) delete c.title;
     else if (typeof patch.title === 'string') c.title = patch.title.slice(0, 200);
@@ -67,6 +73,9 @@ export function updateChoices(patches: Record<string, ChoicePatch>): void {
     }
     if (patch.include === null) delete c.include;
     else if (typeof patch.include === 'boolean') c.include = patch.include;
+    // Only a star is stored; false clears it.
+    if (patch.favorite === null || patch.favorite === false) delete c.favorite;
+    else if (patch.favorite === true) c.favorite = true;
     c.updatedAt = new Date().toISOString();
     const keys = Object.keys(c).filter((k) => k !== 'updatedAt');
     if (keys.length) f.games[crc] = c;

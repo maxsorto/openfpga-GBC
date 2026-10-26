@@ -33,3 +33,9 @@ export function titleBytes(t: string): number {
 export function hasNonAscii(t: string): boolean {
   return /[^\x00-\x7f]/.test(t);
 }
+
+/** Size of a v6 covers.bin with this many games. Same rule as the server's expectedPackSize. */
+export function packBytesV6(count: number): number {
+  if (count <= 0) return 0;
+  return 16 + 512 + count * (128 + (128 * 128 + 80 * 80) * 2 + 3 * 256) + 256;
+}

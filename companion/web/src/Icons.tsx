@@ -89,3 +89,19 @@ export const IconClose = (p: P) => (
     <path d="m4 4 8 8M12 4l-8 8" />
   </svg>
 );
+
+/** A five point star. Filled when `on`. */
+export const IconStar = ({ on, ...p }: P & { on?: boolean }) => (
+  <svg {...base(p)} fill={on ? 'currentColor' : 'none'}>
+    <path d="M8 1.9l1.85 3.85 4.2.55-3.07 2.9.78 4.15L8 11.3l-3.76 2.05.78-4.15L1.95 6.3l4.2-.55z" />
+  </svg>
+);
+
+export const IconGrid = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="2" y="2" width="5" height="5" rx="1" />
+    <rect x="9" y="2" width="5" height="5" rx="1" />
+    <rect x="2" y="9" width="5" height="5" rx="1" />
+    <rect x="9" y="9" width="5" height="5" rx="1" />
+  </svg>
+);
