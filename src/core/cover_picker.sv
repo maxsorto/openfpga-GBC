@@ -9,8 +9,8 @@
 // The header and entries are pulled into BRIDGE_PACK + 0x0000.., the current image into BRIDGE_PACK + 0x10000.
 // Both arrive through a data_loader (16-bit words, low byte = lower address).
 module cover_picker #(
-    parameter COVER_W      = 112,
-    parameter COVER_H      = 112,
+    parameter COVER_W      = 96,
+    parameter COVER_H      = 96,
     parameter MAX_ENTRIES  = 32,
     parameter COVER_SLOT   = 16'd100,
     parameter CART_SLOT    = 16'd1,
@@ -57,20 +57,23 @@ module cover_picker #(
     output wire        menu_on
 );
 
-localparam IMG_WORDS  = COVER_W * COVER_H;          // 16-bit words per cover
-localparam IMG_BYTES  = IMG_WORDS * 2;
+localparam PIX        = COVER_W * COVER_H;          // 8-bit palette indices per cover
+localparam IDX_WORDS  = PIX / 2;                    // two indices per 16-bit word
+localparam IMG_BYTES  = 512 + PIX;                  // 256 x RGB565 palette, then indices
 localparam ENT_WORDS  = 8 + 64 * MAX_ENTRIES;       // header + entries, 16-bit words
 localparam IMG_OFFSET = 28'h0010000;                // bridge byte offset of the image region
 
 // ------------------------------------------------------------------ pack memories (written by the loader)
 reg [15:0] ent_ram [0:ENT_WORDS-1];
-reg [15:0] img_ram [0:IMG_WORDS-1];
+reg [15:0] idx_ram [0:IDX_WORDS-1];
+reg [15:0] pal_ram [0:255];
 
 wire pack_is_img = pack_addr[27:16] != 0;
 always @(posedge clk_74a) begin
     if (pack_wr) begin
         if (pack_is_img) begin
-            if (pack_addr[15:1] < IMG_WORDS) img_ram[pack_addr[15:1]] <= pack_data;
+            if (pack_addr[15:9] == 0) pal_ram[pack_addr[8:1]] <= pack_data;
+            else if (pack_addr[15:0] - 16'h200 < PIX) idx_ram[(pack_addr[15:0] - 16'h200) >> 1] <= pack_data;
         end else begin
             if (pack_addr[15:1] < ENT_WORDS) ent_ram[pack_addr[15:1]] <= pack_data;
         end
@@ -313,7 +316,7 @@ end
 
 // ------------------------------------------------------------------ video overlay (clk_vid domain)
 // Layout at 160x144: cover at (24,4)..(135,115), title row at y 124..131 (up to 17 chars), position row at y 134.
-localparam [8:0] CX = 9'd24, CY = 9'd4;
+localparam [8:0] CX = 9'd32, CY = 9'd6;
 reg  [8:0] px = 0, py = 0; // current pixel position (counted from de/hs/vs)
 reg        de_1 = 0, hs_1 = 0, vs_1 = 0;
 always @(posedge clk_vid) begin
@@ -329,40 +332,46 @@ reg [1:0] menu_s = 0;  always @(posedge clk_vid) menu_s <= {menu_s[0], menu_acti
 wire menu_v = menu_s[1];
 assign menu_on = menu_v;
 
-// cover pixel lookahead: fetch the next pixel's word
-wire [8:0] nx = de ? px + 1'b1 : 9'd0;
-wire in_cover = (nx >= CX) && (nx < CX + COVER_W) && (py >= CY) && (py < CY + COVER_H);
-wire [13:0] img_addr = (py - CY) * COVER_W + (nx - CX);
-reg  [15:0] img_q;
-always @(posedge clk_vid) img_q <= img_ram[img_addr];
-reg in_cover_1; always @(posedge clk_vid) in_cover_1 <= in_cover;
+// All lookups use a 3-pixel lookahead (qx) so the 3-stage pipeline below lands on the current output pixel.
+wire [8:0] qx = de ? px + 9'd3 : 9'd2;
 
-// title text: entry title bytes 0..43 live in ent_ram at word 8 + idx*64 + k/2
-localparam [8:0] TX = 9'd12, TY = 9'd124;
-wire        in_title = (py >= TY) && (py < TY + 8) && (px >= TX) && (px < TX + 8 * 17);
-wire [7:0]  tcol     = (px - TX) >> 3;                    // character column 0..16
-wire [2:0]  tbit     = (px - TX) & 3'd7;
+// stage 1: index word / title word / shape tests
+wire in_cover = (qx >= CX) && (qx < CX + COVER_W) && (py >= CY) && (py < CY + COVER_H);
+wire [13:0] pix_n = (py - CY) * COVER_W + (qx - CX);
+reg  [15:0] idx_q;  always @(posedge clk_vid) idx_q <= idx_ram[pix_n[13:1]];
+reg  in_cover_1 = 0, pix_odd_1 = 0;
+always @(posedge clk_vid) begin in_cover_1 <= in_cover; pix_odd_1 <= pix_n[0]; end
+
+localparam [8:0] TX = 9'd12, TY = 9'd112;
+wire        in_title = (py >= TY) && (py < TY + 8) && (qx >= TX) && (qx < TX + 8 * 17);
+wire [7:0]  tcol     = (qx - TX) >> 3;
+wire [2:0]  tbit     = (qx - TX) & 3'd7;
 reg  [15:0] title_q;  always @(posedge clk_vid) title_q <= title_ram[tcol[4:1]];
-wire [7:0]  tchar = tcol[0] ? title_q[15:8] : title_q[7:0];
+reg         tcol0_1 = 0; reg [2:0] tbit_1 = 0; reg in_title_1 = 0;
+always @(posedge clk_vid) begin tcol0_1 <= tcol[0]; tbit_1 <= tbit; in_title_1 <= in_title; end
+
+wire arrow_l = (py >= 9'd44) && (py < 9'd60) && (qx >= 9'd8)   && (qx < 9'd16)  && ((qx - 9'd8)  >= ((py < 9'd52) ? (9'd52 - py) : (py - 9'd51)));
+wire arrow_r = (py >= 9'd44) && (py < 9'd60) && (qx >= 9'd144) && (qx < 9'd152) && ((9'd151 - qx) >= ((py < 9'd52) ? (9'd52 - py) : (py - 9'd51)));
+reg  arrow_1 = 0; always @(posedge clk_vid) arrow_1 <= arrow_l | arrow_r;
+
+// stage 2: palette lookup / glyph row
+wire [7:0]  pidx  = pix_odd_1 ? idx_q[15:8] : idx_q[7:0];
+reg  [15:0] pal_q;  always @(posedge clk_vid) pal_q <= pal_ram[pidx];
+wire [7:0]  tchar = tcol0_1 ? title_q[15:8] : title_q[7:0];
 wire [7:0]  glyph;
 font8x8_rom font (.clk(clk_vid), .addr({tchar[6:0], py[2:0] - TY[2:0]}), .q(glyph));
-// title_q lags px by one clock and glyph by two: delay the column bit and the row gate to match
-reg [2:0] tbit_1 = 0, tbit_2 = 0; reg in_title_1 = 0, in_title_2 = 0; reg [7:0] tchar_1 = 0;
-always @(posedge clk_vid) begin tbit_1 <= tbit; tbit_2 <= tbit_1; in_title_1 <= in_title; in_title_2 <= in_title_1; tchar_1 <= tchar; end
-wire title_px = in_title_2 && (tchar_1 >= 8'h20) && (tchar_1 < 8'h7F) && glyph[tbit_2];
-
-// position row: "<" and ">" arrows, drawn as small triangles, left/right of the cover
-wire arrow_l = (py >= 9'd52) && (py < 9'd68) && (px >= 9'd8)  && (px < 9'd16)  && ((px - 9'd8)  >= ((py < 9'd60) ? (9'd60 - py) : (py - 9'd59)));
-wire arrow_r = (py >= 9'd52) && (py < 9'd68) && (px >= 9'd144) && (px < 9'd152) && ((9'd151 - px) >= ((py < 9'd60) ? (9'd60 - py) : (py - 9'd59)));
-
-reg arrow_l_1 = 0, arrow_l_2 = 0, arrow_r_1 = 0, arrow_r_2 = 0;
-always @(posedge clk_vid) begin arrow_l_1 <= arrow_l; arrow_l_2 <= arrow_l_1; arrow_r_1 <= arrow_r; arrow_r_2 <= arrow_r_1; end
-
+reg  in_cover_2 = 0, in_title_2 = 0, arrow_2 = 0; reg [2:0] tbit_2 = 0; reg [7:0] tchar_2 = 0;
 always @(posedge clk_vid) begin
-    if (!menu_v) menu_rgb <= 24'h000000;
-    else if (in_cover_1) menu_rgb <= {img_q[15:11], img_q[15:13], img_q[10:5], img_q[10:9], img_q[4:0], img_q[4:2]};
-    else if (title_px || arrow_l_2 || arrow_r_2) menu_rgb <= 24'hF0F0F0;
-    else menu_rgb <= 24'h101418;
+    in_cover_2 <= in_cover_1; in_title_2 <= in_title_1; arrow_2 <= arrow_1; tbit_2 <= tbit_1; tchar_2 <= tchar;
+end
+wire title_px = in_title_2 && (tchar_2 >= 8'h20) && (tchar_2 < 8'h7F) && glyph[tbit_2];
+
+// stage 3: output
+always @(posedge clk_vid) begin
+    if (!menu_v)         menu_rgb <= 24'h000000;
+    else if (in_cover_2) menu_rgb <= {pal_q[15:11], pal_q[15:13], pal_q[10:5], pal_q[10:9], pal_q[4:0], pal_q[4:2]};
+    else if (title_px || arrow_2) menu_rgb <= 24'hF0F0F0;
+    else                 menu_rgb <= 24'h101418;
 end
 
 endmodule
