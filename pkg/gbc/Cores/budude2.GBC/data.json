@@ -5,7 +5,7 @@
       {
         "name": "Cartridge",
         "id": 1,
-        "required": true,
+        "required": false,
         "parameters": "0x109",
         "extensions": [
           "gbc",
