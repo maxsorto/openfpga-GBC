@@ -73,6 +73,16 @@
         "extensions": [
           "sus"
         ]
+      },
+      {
+        "id": 103,
+        "name": "Debug Log",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "log"
+        ]
       }
     ]
   }

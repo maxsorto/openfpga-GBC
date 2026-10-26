@@ -8,6 +8,7 @@ Layout (little-endian):
   528 + count*128  blobs, count x 45568 B : center 128x128 RGB565 | preview 80x80 RGB565 (row-major)
   then   path structs count x 3 x 256 B: ROM path, .sav path, .sus (suspend) path, NUL padded,
          read straight into the core's 0x0192 parameter struct
+  then   one more 256 B path struct: the debug log, /Saves/<platform>/common/picker.log
 Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
 Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
@@ -65,6 +66,7 @@ def main():
         f.write(struct.pack("<4sHHHH4x", b"GBCV", 6, len(roms), CEN, TH))
         f.write(bytes(512))
         f.write(b"".join(entries)); f.write(b"".join(blobs)); f.write(b"".join(paths))
+        f.write(f"/Saves/{a.platform}/common/picker.log".encode().ljust(256, b"\0"))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()

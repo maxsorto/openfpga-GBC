@@ -342,6 +342,7 @@ wire    [31:0]  target_dataslot_length;
 wire            picker_hold_gb;             // cover picker: Game Boy held in reset
 // cover picker hi-res menu: SDRAM read port (clk_sys), art loading, video
 wire            picker_sd_own, picker_sd_oe, picker_art_load;
+reg      [15:0] picker_dbg = 0;            // cover picker diagnostics (see the end of this file)
 wire    [23:0]  picker_sd_addr;
 wire            picker_hr_mode, picker_hr_de, picker_hr_hs, picker_hr_vs;
 wire    [23:0]  picker_hr_rgb;
@@ -475,6 +476,7 @@ always_comb begin
     32'hF1000000: begin bridge_rd_data = int_bridge_read_data;        end
     32'hF2000000: begin bridge_rd_data = int_bridge_read_data;        end
     32'hF3xxxxxx: begin bridge_rd_data = picker_param_rd;             end
+    32'hF4xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker debug log
     default:      begin bridge_rd_data = 0;                           end
   endcase
 end
@@ -752,13 +754,15 @@ always_ff @(posedge clk_sys) begin
   end
 end
 wire        art_dl       =  art_load_s[2];
+// the menu's reads come first while it owns the SDRAM (it lets go during its own ROM and art downloads), so a
+// download flag the host leaves raised at power-on can never steer its reads elsewhere
 wire  [1:0] sdram_ds     = (cart_download | art_dl | picker_sd_own) ? 2'b11 : {mbc_addr[0], ~mbc_addr[0]};
 wire [15:0] sdram_do;
 wire [15:0] sdram_di     = (cart_download | art_dl) ? ioctl_dout : 16'd0;
-wire [23:0] sdram_addr   = (cart_download | art_dl) ? ioctl_addr[24:1] :
-                           picker_sd_own ? picker_sd_addr : {2'b00, mbc_addr[22:1]};
+wire [23:0] sdram_addr   = picker_sd_own ? picker_sd_addr :
+                           (cart_download | art_dl) ? ioctl_addr[24:1] : {2'b00, mbc_addr[22:1]};
 wire sdram_oe            =  picker_sd_own ? picker_sd_oe : (~cart_download & ~art_dl & cart_rd & ~cram_rd);
-wire sdram_we            = (cart_download & dn_write) | (art_dl & art_write);
+wire sdram_we            = ~picker_sd_own & ((cart_download & dn_write) | (art_dl & art_write));
 wire sdram_refresh_force;
 wire sdram_autorefresh   = !ff_on;
 
@@ -1330,6 +1334,7 @@ cover_picker cover_picker (
   .sd_addr                    ( picker_sd_addr             ),
   .sd_oe                      ( picker_sd_oe               ),
   .sd_q                       ( sdram_do                   ),
+  .dbg                        ( picker_dbg                 ),
   .art_load                   ( picker_art_load            ),
   .hr_mode                    ( picker_hr_mode             ),
   .hr_de                      ( picker_hr_de               ),
@@ -1489,6 +1494,18 @@ always_ff @(posedge clk_sys) begin : ffwd
   end
 
   fast_forward <= (fastforward | ff_latch);
+end
+
+// cover picker diagnostics: each bit is "seen at least once" over a ~30 ms window (clk_sys)
+reg [21:0] dbg_cnt = 0; reg [15:0] dbg_acc = 0; reg dbg_artwr = 0;
+always_ff @(posedge clk_sys) begin
+  dbg_cnt <= dbg_cnt + 1'b1;
+  if (art_dl & art_write & ce_cpu2x) dbg_artwr <= 1;
+  dbg_acc <= dbg_acc | {boot_download, dbg_artwr, picker_hold_s[1], sleep_savestate,
+                        sdram_we, loading_done, reset, ff_on,
+                        paused, ioctl_download, art_dl, cart_download,
+                        picker_sd_own & (sdram_do != 16'd0), picker_sd_oe & ce_cpu2x, picker_sd_own, ce_cpu2x};
+  if (dbg_cnt == 0) begin picker_dbg <= dbg_acc; dbg_acc <= 0; end
 end
 
 endmodule

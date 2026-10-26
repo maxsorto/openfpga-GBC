@@ -14,15 +14,18 @@
 //   3 left preview       4 right preview
 module cover_picker #(
     parameter MAX_ENTRIES = 31,
+    parameter DEBUG_SQUARES = 0,     // 1 draws the diagnostic squares along the top of the menu (see README)
     parameter COVER_SLOT  = 16'd100,
     parameter CART_SLOT   = 16'd101,
     parameter SAVE_SLOT   = 16'd18,
     parameter SUS_SLOT    = 16'd102,
+    parameter LOG_SLOT    = 16'd103,
     parameter [31:0] BRIDGE_SAVE  = 32'h20000000,
     parameter [31:0] BRIDGE_STATE = 32'h40000000,
     parameter [31:0] BRIDGE_PACK = 32'h30000000,
     parameter [31:0] BRIDGE_CART = 32'h10000000,
-    parameter [31:0] PARAM_ADDR  = 32'hF3000000
+    parameter [31:0] PARAM_ADDR  = 32'hF3000000,
+    parameter [31:0] LOG_ADDR    = 32'hF4000000
 ) (
     input  wire        clk_74a,
     input  wire        enable,
@@ -72,6 +75,7 @@ module cover_picker #(
     output reg  [23:0] sd_addr = 0,
     output reg         sd_oe = 0,
     input  wire [15:0] sd_q,
+    input  wire [15:0] dbg,              // clk_sys: diagnostic bits from core_top, drawn as squares at the top left
     output reg         art_load = 0,     // clk_74a: cover art is streaming into SDRAM through the cart loader
     output wire        hr_mode,          // clk_vid: video comes from the hi-res menu (scaler slot 2)
     output reg         hr_de = 0, hr_hs = 0, hr_vs = 0,
@@ -140,7 +144,7 @@ picker_dpram #(.WIDTH(32), .ADDR(7)) param_ram (
     .wdata(param_bwe ? bridge_wr_data : param_wdata),
     .rclk(clk_74a), .raddr(bridge_addr[8:2]), .q(param_q));
 // APF bridge reads lag one transaction: latch on bridge_rd like every stock bridge device
-always @(posedge clk_74a) if (bridge_rd) param_rd_data <= param_q;
+// (param_rd_data is latched at the end of the file, where the debug log's read port is declared)
 
 // ================================================================== frame tick (vsync into clk_74a)
 reg [2:0] vs_s = 0;
@@ -189,8 +193,9 @@ localparam [6:0]
     S_PREAD = 41, S_PREAD_W = 42, S_PFLAGS = 43, S_PSIZE = 44, S_POPEN = 45, S_POPEN_W = 46, S_XFER_W = 47,
     S_L1 = 49, S_SETTLE = 50, S_L3 = 52, S_L4 = 53, S_L5 = 54, S_L6 = 55, S_L7 = 56, S_L8 = 57, S_L9 = 58,
     S_L10 = 59, S_L11 = 60, S_LRUN = 61, S_LFAIL = 62, S_PAUSE = 63, S_H0 = 64, S_H1 = 65, S_H2 = 66, S_H3 = 67,
-    S_H4 = 68, S_H5 = 69, S_H6 = 70, S_PROBE1 = 71, S_PROBE2 = 72, S_LOAD2 = 73, S_ART0 = 74, S_ART_W = 75;
+    S_H4 = 68, S_H5 = 69, S_H6 = 70, S_PROBE1 = 71, S_PROBE2 = 72, S_LOAD2 = 73, S_ART0 = 74, S_ART_W = 75, S_ART_RT = 76, S_LG2 = 77;
 localparam [1:0] PK_ROM = 0, PK_SAV = 1, PK_SUS = 2;
+localparam [12:0] LOG_BYTES = 13'd4096;   // debug log file size
 
 reg  [6:0]  state = S_BOOT, op_ret = S_BOOT;
 reg  [1:0]  pk = 0;                // path struct kind for the open subroutine
@@ -198,6 +203,8 @@ reg  [31:0] pflags = 0, psize = 0;
 reg  [15:0] op_slot = 0;
 reg  [2:0]  oerr = 0, xerr = 0;    // result of the last open / transfer
 reg  [27:0] tmr = 0;
+reg  [27:0] mt = 0;                // time idle in the menu (log flush after 3 s)
+reg         plog = 0, lflush_req = 0; // path struct = the log file's; a log flush is due
 reg  [31:0] sv = 0, ssz = 0;       // latched save / state sizes of the running game
 reg  [31:0] susp = 0, known = 0;   // per game: has a suspend file / probed
 reg         lerr = 0;              // last launch failed: show the error on line 2
@@ -224,6 +231,8 @@ reg  [7:0]  title_w = 0;
 reg  [8:0]  htw = 0, hsw = 0;      // hi-res title / platform widths
 reg         lf = 0;                // layout pass for the hi-res font
 reg  [4:0]  ag = 0;                // art loading: game index
+reg  [2:0]  art_try = 0;           // art loading: retries left for this game
+reg         dbg_art_err = 0, dbg_art_done = 0;   // diagnostics: a refused art read; the art stream finished
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
 wire        done_rise = target_dataslot_done & ~done_1;
@@ -234,7 +243,8 @@ wire [4:0]  next = (idx == count - 1'b1) ? 5'd0 : idx + 1'b1;
 wire [31:0] blob0 = ENT_OFF + {20'd0, count, 7'd0};
 function [31:0] blob(input [4:0] i); blob = blob0 + i * BLOB_BYTES; endfunction
 wire [31:0] paths0 = blob0 + count * BLOB_BYTES;
-wire [7:0]  pslot   = {1'b0, idx, 1'b0} + {3'd0, idx} + {6'd0, pk};   // idx*3 + kind
+wire [7:0]  pslot   = plog ? {2'b0, count, 1'b0} + {3'd0, count}            // after every game's: the log path
+                           : {1'b0, idx, 1'b0} + {3'd0, idx} + {6'd0, pk};   // idx*3 + kind
 wire [31:0] pstruct = paths0 + {16'd0, pslot, 8'd0};
 
 // platform line, character j
@@ -264,9 +274,12 @@ always @(posedge clk_74a) begin
     map2_we                  <= 0;
     ago                      <= 0;
 
+    if (state == S_MENU && cont1_key[15:0] == 0) begin if (mt != 28'd250_000_000) mt <= mt + 1'b1; end else mt <= 0;
+
     case (state)
     S_BOOT: begin
-        menu_active <= 0; picker_download <= 0; game_loaded <= 0; idx <= 0; level_target <= 0;
+        // hold the Game Boy explicitly: the power-up value of hold_gb is not reliable on hardware (seen low in build 14)
+        menu_active <= 0; picker_download <= 0; game_loaded <= 0; idx <= 0; level_target <= 0; hold_gb <= 1;
         if (!core_ready) boot_timer <= 0;
         else if (boot_timer != 27'd37_000_000) boot_timer <= boot_timer + 1'b1;
         else state <= enable ? S_HDR_REQ : S_OFF;
@@ -292,19 +305,27 @@ always @(posedge clk_74a) begin
         target_dataslot_read <= 1; state <= S_ENT_WAIT;
     end
     S_ENT_WAIT: if (done_rise) begin
-        if (target_dataslot_err != 0) state <= S_OFF; else begin ag <= 0; tmr <= 0; state <= S_ART0; end
+        if (target_dataslot_err != 0) state <= S_OFF; else begin ag <= 0; tmr <= 0; art_try <= 3'd7; state <= S_ART0; end
     end
     // ---- stream every game's art into SDRAM (once, at boot)
     S_ART0: if (ag == count) begin
                 tmr <= tmr + 1'b1;
-                if (tmr == 28'd7400) begin art_load <= 0; state <= S_LOAD; end   // let the last writes drain
+                if (tmr == 28'd7400) begin art_load <= 0; dbg_art_done <= 1; state <= S_LOAD; end   // let the last writes drain
             end else begin
                 art_load <= 1;
                 target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= blob(ag);
                 target_dataslot_bridgeaddr <= ART_BRIDGE + {11'd0, ag, 16'd0}; target_dataslot_length <= BLOB_BYTES;
                 target_dataslot_read <= 1; state <= S_ART_W;
             end
-    S_ART_W: if (done_rise) begin ag <= ag + 1'b1; state <= S_ART0; end
+    S_ART_W: if (done_rise) begin
+        if (target_dataslot_err != 0) dbg_art_err <= 1;
+        if (target_dataslot_err != 0 && art_try != 0) begin art_try <= art_try - 1'b1; tmr <= 0; state <= S_ART_RT; end
+        else begin ag <= ag + 1'b1; art_try <= 3'd7; state <= S_ART0; end
+    end
+    S_ART_RT: begin                                  // the host refused the read: wait 20 ms and ask again
+        tmr <= tmr + 1'b1;
+        if (tmr == 28'd1_480_000) begin tmr <= 0; state <= S_ART0; end
+    end
 
     // ---- load the selection: lay out the title and platform, then pull the three images
     S_LOAD: begin
@@ -353,6 +374,7 @@ always @(posedge clk_74a) begin
         else if (lf) begin hsw <= mp[8:0]; lf <= 0; line2 <= 0; k <= 0; mp <= 10'd0; state <= S_MAP_FETCH; end
         else begin
             title_w <= (mp[7:0] == 0) ? 8'd0 : mp[7:0] - 1'b1;   // drop the trailing gap
+            if (!menu_active) lflush_req <= 1;          // fresh menu (boot or Home): write the log once it is idle
             gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; state <= S_MENU;
         end
     end
@@ -362,6 +384,18 @@ always @(posedge clk_74a) begin
         if (!anim && step_r && count > 1)      begin idx <= next; lerr <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE; end
         else if (!anim && step_l && count > 1) begin idx <= prev; lerr <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE; end
         else if (press_a)             begin level_target <= 0; state <= S_LAUNCH_FADE; end
+        else if (lflush_req && mt == 28'd222_000_000) begin   // 3 s idle: write the debug log to its file
+            lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
+        end
+    end
+    S_LG2: begin
+        plog <= 0;
+        if (oerr > 3'd1) state <= S_MENU;
+        else begin
+            target_dataslot_id <= LOG_SLOT; target_dataslot_slotoffset <= 0;
+            target_dataslot_bridgeaddr <= LOG_ADDR; target_dataslot_length <= {19'd0, LOG_BYTES};
+            target_dataslot_write <= 1; op_ret <= S_MENU; state <= S_XFER_W;
+        end
     end
     S_FADE: if (tlevel == 0) begin ent_raddr <= ebase + 11'd20; state <= S_LOAD; end   // title faded out: relayout
 
@@ -743,8 +777,8 @@ wire       hd_cur = hd_row && hdx[8:3] == idx_s;
 wire       hd_dim = hd_row && !hd_cur && hdx[2:0] >= 3'd2 && hdx[2:0] < 3'd6;
 wire       hd_rnd = hd_row && (hdx[2:0] == 0 || hdx[2:0] == 7) && (y == HDY || y == HDY + 3);   // pill corners
 
-// background: deep blue gradient with a soft vignette toward the bottom
-wire [7:0] hbg_r = 8'd30 - y[8:4], hbg_g = 8'd36 - y[8:4], hbg_b = 8'd56 - y[8:3];
+// background: solid black
+wire [7:0] hbg_r = 8'd0, hbg_g = 8'd0, hbg_b = 8'd0;
 
 // line buffer: written by the fetcher (clk_sys), two lines, indexed by screen x
 reg         lb_we = 0; reg [9:0] lb_wa = 0; reg [15:0] lb_wd = 0;
@@ -786,9 +820,23 @@ wire [4:0] tal  = (galpha == 3) ? 5'd16 : (galpha == 2) ? 5'd11 : (galpha == 1) 
 wire [8:0] tlp  = tal * {tl_s, 1'b0};
 wire [8:0] tlq  = tlp[8:4] * hlvl;
 wire [4:0] twc  = tlq[8:4];
+reg [31:0] q_samp = 0;   // log: the pixel fetched for (160, 100) with its row base
+reg [21:0] dcnt = 0; reg [3:0] dacc = 0, dshow = 0;   // diagnostics: fetcher activity over ~30 ms windows (clk_sys)
+// diagnostics: 24 squares (8 px on a 10 px pitch, groups of 4) along the top: green = 1, dark red = 0
+reg [23:0] dbg_v0 = 0, dbg_v = 0;
+always @(posedge clk_vid) begin dbg_v0 <= {dshow, dbg_art_done, dbg_art_err, hold_gb, menu_active, dbg}; dbg_v <= dbg_v0; end
+wire [8:0] dqx = x - 9'd4; wire [4:0] dq_i = dqx / 9'd10; wire [3:0] dq_o = dqx - dq_i * 9'd10;
+wire [4:0] dsq = dq_i + dq_i / 3'd4;   // square index skipping one slot after every four
+reg  s1_dbg = 0, s1_dbv = 0, s2_dbg = 0, s2_dbv = 0;
+always @(posedge clk_vid) begin
+    s1_dbg <= DEBUG_SQUARES && x >= 4 && y >= 2 && y < 10 && dq_o < 8 && dq_i < 29 && (dq_i % 5) != 4;
+    s1_dbv <= dbg_v[dq_i - dq_i / 3'd5];
+    s2_dbg <= s1_dbg; s2_dbv <= s1_dbv;
+end
 reg [23:0] h_out;
 always @(*) begin
-    if (s2_c && !s2_cut)  h_out = {mix(s2_br, cr2, hwc), mix(s2_bg, cg2, hwc), mix(s2_bb, cb2, hwc)};
+    if (s2_dbg)           h_out = s2_dbv ? 24'h20E040 : 24'h601010;
+    else if (s2_c && !s2_cut)  h_out = {mix(s2_br, cr2, hwc), mix(s2_bg, cg2, hwc), mix(s2_bb, cb2, hwc)};
     else if (s2_t1)       h_out = {mix(s2_br, 8'd246, twc), mix(s2_bg, 8'd246, twc), mix(s2_bb, 8'd250, twc)};
     else if (s2_t2)       h_out = {mix(s2_br, 8'd128, twc), mix(s2_bg, 8'd140, twc), mix(s2_bb, 8'd168, twc)};
     else if (s2_dc)       h_out = {mix(s2_br, 8'd232, hlvl), mix(s2_bg, 8'd236, hlvl), mix(s2_bb, 8'd244, hlvl)};
@@ -812,7 +860,7 @@ endfunction
 // One read per SDRAM cycle (sd_ce, ~8.4 MHz). The address is set, and the previous read's data captured, two
 // clk_sys cycles after each sd_ce, safely inside the window where the controller's dout holds that read.
 reg [2:0] own_s = 0;
-always @(posedge clk_sys) own_s <= {own_s[1:0], menu_active & hold_gb & ~art_load};
+always @(posedge clk_sys) own_s <= {own_s[1:0], menu_active & hold_gb & ~art_load & ~picker_download};
 assign sd_own = own_s[2];
 reg [2:0] lq_s = 0; reg [8:0] fy = 0;
 reg [1:0] ce_d = 0;
@@ -870,6 +918,53 @@ always @(posedge clk_sys) begin
     default: ;
     endcase
     if (!sd_own) sd_oe <= 0;
+    if (lb_we && fy == 9'd100 && lb_wa[8:0] == 9'd160) q_samp <= {fbase[15:0], lb_wd};   // center cover, row 100
+    dcnt <= dcnt + 1'b1;
+    dacc <= dacc | {lb_we, fst == 3'd3, lq_s[2] != lq_s[1], tick};
+    if (dcnt == 0) begin dshow <= dacc; dacc <= 0; end
+end
+
+
+// ================================================================== debug log (clk_74a)
+// A ring of 511 eight-byte records, written to /Saves/gbc/common/picker.log (data slot 103) after the menu has sat idle
+// for 3 s following boot or Home. Record: tag (S state change, D diagnostic bits changed, Q SDRAM sample), time in
+// units of 4096 clk_74a cycles (55 us), 32 bits of data. Record 0 is a header: "PLOG", next write slot, total count.
+// tools/read_picker_log.py decodes it.
+reg  [35:0] lg_time = 0;
+reg  [6:0]  lg_st = S_BOOT;
+reg  [23:0] dbg_a0 = 0, dbg_a = 0, lg_dbg = 0;
+reg  [31:0] q_a0 = 0, q_a = 0;
+reg  [8:0]  lg_wp = 9'd1;
+reg  [15:0] lg_n = 0;
+reg  [3:0]  qcnt = 0; reg q_pend = 0; reg menu_1 = 0;
+reg         lg_we = 0; reg [63:0] lg_wd = 0;
+wire [63:0] lg_q;
+picker_dpram #(.WIDTH(64), .ADDR(9)) log_ram (
+    .wclk(clk_74a), .we(lg_we), .waddr(lg_wp), .wdata(lg_wd),
+    .rclk(clk_74a), .raddr(bridge_addr[11:3]), .q(lg_q));
+reg  [11:0] lr_a = 0;
+always @(posedge clk_74a) lr_a <= bridge_addr[11:0];
+wire [31:0] log_word = (lr_a[11:3] == 0) ? (lr_a[2] ? {7'd0, lg_wp, lg_n} : "PLOG") : (lr_a[2] ? lg_q[31:0] : lg_q[63:32]);
+always @(posedge clk_74a) if (bridge_rd) param_rd_data <= (bridge_addr[31:24] == LOG_ADDR[31:24]) ? log_word : param_q;
+always @(posedge clk_74a) begin
+    lg_time <= lg_time + 1'b1;
+    dbg_a0 <= {dshow, dbg_art_done, dbg_art_err, hold_gb, menu_active, dbg}; dbg_a <= dbg_a0;
+    q_a0 <= q_samp; q_a <= q_a0;
+    menu_1 <= menu_active;
+    if (menu_active & ~menu_1) qcnt <= 4'd8;                        // eight samples after each menu entry
+    else if (frame_tick && menu_active && qcnt != 0) begin qcnt <= qcnt - 1'b1; q_pend <= 1; end
+    lg_we <= 0;
+    if (state != lg_st) begin
+        lg_st <= state; lg_we <= 1;
+        lg_wd <= {"S", lg_time[35:12], 1'b0, state, 1'b0, lg_st, target_dataslot_err, oerr, xerr, 2'd0, idx};
+    end else if (dbg_a != lg_dbg) begin
+        lg_dbg <= dbg_a; lg_we <= 1;
+        lg_wd <= {"D", lg_time[35:12], 8'd0, dbg_a};
+    end else if (q_pend) begin
+        q_pend <= 0; lg_we <= 1;
+        lg_wd <= {"Q", lg_time[35:12], q_a};
+    end
+    if (lg_we) begin lg_wp <= (lg_wp == 9'd511) ? 9'd1 : lg_wp + 1'b1; lg_n <= lg_n + 1'b1; end
 end
 
 endmodule

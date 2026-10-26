@@ -56,6 +56,22 @@ Controls in the menu: Left and Right to browse, A to play. In game: L to pause, 
 - **Video.** The menu draws into the Game Boy's 160x144 frame at 6.7 MHz in three pipeline stages. The pause panel is drawn over the frozen game frame, which is dimmed to about 3/8 brightness.
 - **Testing.** Icarus Verilog testbenches play the Pocket's side: a fake card that serves opens, reads and writes. `tools/sim/tb_suspend.sv` runs launch, pause, Home and resume end to end. The screenshots here are frames from that simulation.
 
+## Debugging on hardware
+
+The menu runs on the Pocket's FPGA, so a hardware bug can't be stepped through. Two aids are built in.
+
+**Debug log.** The core keeps the last 511 events in a ring buffer: state machine steps with their data slot errors, changes in the SDRAM and reset signals, and samples of the cover pixels it fetched. About 3 seconds after the menu settles, after boot and after every Home, it writes the buffer to `/Saves/gbc/common/picker.log` on the SD card. The file is data slot 103. Put the card in a computer and run:
+
+```sh
+python3 tools/read_picker_log.py /Volumes/Pocket/Saves/gbc/common/picker.log
+```
+
+It prints one line per event with a timestamp in milliseconds and the state names taken from `cover_picker.sv`. The cover pack holds the log's path after the game paths, so packs made with an older `make_cover_pack.py` have no log.
+
+**Status squares.** Set `DEBUG_SQUARES` to 1 at the top of `cover_picker.sv` and rebuild, and a row of small squares along the top of the menu shows the same signals live. Green means the signal was seen in the last 30 ms and dark red means it wasn't. They're in groups of four, left to right, in the order of the `DBG` list in `tools/read_picker_log.py`. A phone video of the screen is enough to read them.
+
+To add a signal, wire it into `dbg` in `core_top.sv` (or the picker's own bits), then add its name to `DBG`. To log a new event, add a branch to the logger at the end of `cover_picker.sv`.
+
 ## Build it
 
 Quartus Prime Lite 22.1 runs in an x86 container. On Apple Silicon that means Colima with Rosetta.
@@ -110,7 +126,7 @@ Built in one Claude Code session with Claude Opus 5.5, measured from the transcr
 - `src/core/core_top.sv`: wiring into the GBC core (bridge, data slots, save states, video and audio mix)
 - `src/core/picker_dpram.v`: block RAM wrapper used by the menu
 - `pkg/gbc/Cores/budude2.GBC/data.json`: data slots, including Cover Pack (100), Game (101) and Suspend (102)
-- `tools/`: pack builder, box art fetcher, bitstream reverser, packaging script
+- `tools/`: pack builder, box art fetcher, bitstream reverser, packaging script, debug log reader
 - `tools/sim/`: Icarus testbenches with a fake Pocket host
 - `docs/images/`: README images
 
