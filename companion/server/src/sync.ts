@@ -5,24 +5,25 @@
  *   2. Copy ROMs: write beside the final name, fsync, read back, check the CRC, rename.
  *   3. Remove ROMs that left the library, only if the manifest says the app placed them
  *      and the file is still the ROM the app put there.
- *   4. Build covers.bin and write it and the manifest, then read both back to verify.
+ *   4. Stream covers.bin (v6 or v7, by the core on the card) to a file beside it,
+ *      check it, then rename it into place. Write the manifest. Read both back.
  *
  * Only .gb and .gbc files in Assets/gbc/common, covers.bin and cover-picker.json are
  * ever written or removed. Saves (.sav, .sus and everything under Saves) are never touched.
  */
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BACKUP_DIR, COVERS_REL, PACK_PLATFORM } from './config.js';
-import { loadArt } from './art.js';
-import { placeholderImage } from './image.js';
+import { BACKUPS_KEPT, BACKUP_DIR, COVERS_REL, PACK_PLATFORM } from './config.js';
+import { packBlob } from './art.js';
 import { cardRomDir } from './library.js';
-import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeFileSynced, writeManifest, type ManifestEntry } from './manifest.js';
-import { packWriter, readPackSummary, type PackGame } from './pack.js';
+import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeManifest, type ManifestEntry } from './manifest.js';
+import { PACK_HEAD_MAX, packWriter, readPackSummary, type StreamGame } from './pack.js';
 import { makePlan, type PlanOptions, type SyncPlan } from './plan.js';
 import { crc32, fileCrc, flushCrcCache, rememberCrc } from './roms.js';
 
-export type SyncPhase = 'check' | 'copy' | 'remove' | 'art' | 'pack' | 'write' | 'verify';
+export type SyncPhase = 'check' | 'copy' | 'remove' | 'pack' | 'write' | 'verify';
 
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }
@@ -75,6 +76,50 @@ export function startSync(req: SyncRequest): SyncJob {
     },
   );
   return job;
+}
+
+/** SHA-256 and size of a file, read 1 MB at a time. */
+export function hashFile(file: string): { sha: string; bytes: number } {
+  const hash = crypto.createHash('sha256');
+  const buf = Buffer.alloc(1 << 20);
+  const fd = fs.openSync(file, 'r');
+  let bytes = 0;
+  try {
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n <= 0) break;
+      hash.update(buf.subarray(0, n));
+      bytes += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { sha: hash.digest('hex'), bytes };
+}
+
+function readHead(file: string, max: number): Buffer {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(Math.min(max, fs.fstatSync(fd).size));
+    fs.readSync(fd, buf, 0, buf.length, 0);
+    return buf;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Copy the card's covers.bin to the Mac, keeping the last few. */
+function backupCovers(target: string): string {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = path.join(BACKUP_DIR, `covers-${stamp}.bin`);
+  fs.copyFileSync(target, backup);
+  const old = fs
+    .readdirSync(BACKUP_DIR)
+    .filter((f) => /^covers-.*\.bin$/.test(f))
+    .sort();
+  for (const f of old.slice(0, Math.max(0, old.length - BACKUPS_KEPT))) fs.rmSync(path.join(BACKUP_DIR, f), { force: true });
+  return backup;
 }
 
 /** Copy one ROM to the card and prove it arrived intact. */
@@ -220,53 +265,78 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
 
   if (!plan.space.removeFirst) doRemove();
 
-  // The pack.
-  const writer = packWriter();
-  emit({ type: 'phase', phase: 'art', message: `Preparing art for ${packGames.length} games` });
-  const pack: PackGame[] = [];
-  for (const g of packGames) {
-    let art;
-    try {
-      art = await loadArt(g.art, g.title);
-    } catch (e: any) {
-      emit({ type: 'log', level: 'warn', message: `${g.title}: art not available (${e?.message ?? e}). Using a title card.` });
-      art = await placeholderImage(g.title);
-    }
-    pack.push({ title: g.title, romFile: g.file, platform: g.platform, romSize: g.size, art, crc: g.crc, favorite: g.favorite });
-    emit({ type: 'progress', done: pack.length, total: packGames.length * 2 });
-  }
-
+  // The pack, streamed to a file beside covers.bin: one game's art in memory at a time.
+  const writer = packWriter(plan.pack.version);
   const target = coversPath(card);
-  let data: Buffer | null = null;
+  let packBytes = 0;
+  let packSha: string | null = null;
   let backup: string | null = null;
-  if (pack.length) {
-    emit({ type: 'phase', phase: 'pack', message: `Building covers.bin (v${writer.version})` });
-    data = writer.build(pack, { logPlatform: PACK_PLATFORM, onProgress: (n) => emit({ type: 'progress', done: packGames.length + n, total: packGames.length * 2 }) });
-    if (data.length !== writer.expectedSize(pack.length)) throw new Error('Built file has the wrong size');
-  }
+  if (packGames.length) {
+    emit({ type: 'phase', phase: 'pack', message: `Building covers.bin (v${writer.version}, ${packGames.length} games)` });
+    const tmp = path.join(path.dirname(target), '.covers.bin.part');
+    try {
+      const hash = crypto.createHash('sha256');
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        const games: StreamGame[] = packGames.map((g) => ({
+          title: g.title,
+          romFile: g.file,
+          platform: g.platform,
+          romSize: g.size,
+          crc: g.crc,
+          favorite: g.favorite,
+          blob: async () => {
+            try {
+              return await packBlob(g.art, g.title);
+            } catch (e: any) {
+              emit({ type: 'log', level: 'warn', message: `${g.title}: art not available (${e?.message ?? e}). Using a title card.` });
+              return packBlob(null, g.title);
+            }
+          },
+        }));
+        packBytes = await writer.write(
+          games,
+          (chunk) => {
+            let off = 0;
+            while (off < chunk.length) off += fs.writeSync(fd, chunk, off, chunk.length - off);
+            hash.update(chunk);
+          },
+          { logPlatform: PACK_PLATFORM, onProgress: (n) => emit({ type: 'progress', done: n, total: packGames.length }) },
+        );
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      packSha = hash.digest('hex');
+      if (packBytes !== writer.expectedSize(packGames.length)) throw new Error('Built file has the wrong size');
+      // Check the new file before it replaces the old one.
+      const back = hashFile(tmp);
+      if (back.bytes !== packBytes || back.sha !== packSha) throw new Error('Verify failed: covers.bin did not write correctly. Try again, or use a card reader.');
 
-  emit({ type: 'phase', phase: 'write', message: 'Writing covers.bin and the manifest' });
-  if (data) {
-    if (fs.existsSync(target)) {
-      const prev = fs.readFileSync(target);
-      if (prev.equals(data)) emit({ type: 'log', level: 'info', message: 'covers.bin on the card was already up to date.' });
-      fs.mkdirSync(BACKUP_DIR, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      backup = path.join(BACKUP_DIR, `covers-${stamp}.bin`);
-      fs.writeFileSync(backup, prev);
-      emit({ type: 'log', level: 'info', message: `Saved a copy of the old covers.bin on this Mac: ${backup}` });
+      emit({ type: 'phase', phase: 'write', message: 'Writing covers.bin and the manifest' });
+      if (fs.existsSync(target)) {
+        if (hashFile(target).sha === packSha) emit({ type: 'log', level: 'info', message: 'covers.bin on the card was already up to date.' });
+        backup = backupCovers(target);
+        emit({ type: 'log', level: 'info', message: `Saved a copy of the old covers.bin on this Mac: ${backup}` });
+      }
+      fs.renameSync(tmp, target);
+      syncDir(path.dirname(target));
+    } finally {
+      fs.rmSync(tmp, { force: true });
     }
-    writeFileSynced(target, data);
+  } else {
+    emit({ type: 'phase', phase: 'write', message: 'Writing the manifest' });
   }
   const manifest = { version: 1 as const, placed: [...placed.values()] };
   const manifestText = writeManifest(card, manifest);
 
   emit({ type: 'phase', phase: 'verify', message: 'Reading back to verify' });
-  if (data) {
-    const back = fs.readFileSync(target);
-    if (!back.equals(data)) throw new Error('Verify failed: covers.bin on the card does not match. Try again, or use a card reader.');
-    const summary = readPackSummary(back);
-    emit({ type: 'log', level: 'info', message: `covers.bin verified: ${back.length.toLocaleString()} bytes, ${summary?.count ?? 0} games.` });
+  if (packSha) {
+    const back = hashFile(target);
+    if (back.bytes !== packBytes || back.sha !== packSha) throw new Error('Verify failed: covers.bin on the card does not match. Try again, or use a card reader.');
+    const summary = readPackSummary(readHead(target, PACK_HEAD_MAX));
+    if (!summary || summary.version !== writer.version || summary.count !== packGames.length) throw new Error('Verify failed: covers.bin header does not match.');
+    emit({ type: 'log', level: 'info', message: `covers.bin verified: v${summary.version}, ${packBytes.toLocaleString()} bytes, ${summary.count} games.` });
   }
   const mBack = fs.readFileSync(manifestPath(card), 'utf8');
   if (mBack !== manifestText || serializeManifest(readManifest(card).manifest) !== manifestText) {
@@ -282,8 +352,8 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   emit({
     type: 'done',
     target,
-    bytes: data?.length ?? 0,
-    count: pack.length,
+    bytes: packBytes,
+    count: packGames.length,
     copied: plan.copy.length,
     removed: plan.remove.length,
     unchanged: plan.unchanged,

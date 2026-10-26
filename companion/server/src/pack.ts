@@ -1,19 +1,20 @@
 /**
- * The cover pack: which writer to use and in what order games go in.
+ * The cover pack: the writers and the order games go in.
  *
- * Today's core reads v6 (pack-v6.ts), which holds 31 games. The streaming core
- * will read v7; its writer goes in pack-v7.ts and into WRITERS below. Nothing
- * outside this file needs to know which version is current.
+ * Today's core reads v6 (pack-v6.ts, 31 games). The streaming core reads v7
+ * (pack-v7.ts, up to 2047 games). core.ts decides which one a card gets.
  */
 import { packV6 } from './pack-v6.js';
+import { packV7 } from './pack-v7.js';
 import type { PackWriter } from './pack-common.js';
 
 export * from './pack-common.js';
-export { BLOB_BYTES, ENTRY_BYTES, MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize, readPackSummary } from './pack-v6.js';
+export { MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize } from './pack-v6.js';
+export { MAX_GAMES_V7, PACK_V7, STRIDE_V7 } from './pack-v7.js';
 
-const WRITERS: Record<number, PackWriter> = { 6: packV6 };
+const WRITERS: Record<number, PackWriter> = { 6: packV6, 7: packV7 };
 
-/** The version sync writes. */
+/** The version used when no card says otherwise. */
 export const CURRENT_PACK_VERSION = 6;
 
 export function packWriter(version = CURRENT_PACK_VERSION): PackWriter {

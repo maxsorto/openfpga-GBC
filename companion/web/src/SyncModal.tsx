@@ -9,7 +9,6 @@ const STEPS: { phase: SyncPhase; label: string }[] = [
   { phase: 'check', label: 'Check the card' },
   { phase: 'copy', label: 'Copy ROMs and verify each one' },
   { phase: 'remove', label: 'Remove ROMs that left the library' },
-  { phase: 'art', label: 'Prepare art' },
   { phase: 'pack', label: 'Build covers.bin' },
   { phase: 'write', label: 'Write covers.bin and the manifest' },
   { phase: 'verify', label: 'Read back and verify' },
@@ -134,7 +133,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
     }
     if (p === 'check' && plan.adopt.length) return `${plan.adopt.length} adopted`;
     if (p === 'remove') return plan.remove.length ? `${plan.remove.length}` : stage === 'done' ? 'nothing to remove' : null;
-    if (p === 'art' && current === 'art') return `${Math.round(progress * 100)}%`;
+    if (p === 'pack' && current === 'pack') return `${Math.round(progress * plan.pack.count)} of ${plan.pack.count}`;
     return null;
   };
 
@@ -201,14 +200,23 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                   <IconWarn /> cover-picker.json on the card could not be read: {plan.manifest.error}. Sync will not run until it is moved aside.
                 </div>
               )}
-              {plan.pack.limit != null && plan.menuGames > plan.pack.limit && (
+              {plan.pack.streaming ? (
+                <div className="notice ok">
+                  <IconCheck />
+                  <div>
+                    {plan.pack.reason} covers.bin is pack v{plan.pack.version}, {fmtBytes(plan.pack.bytes)}. Favorites come first, then A to Z.
+                  </div>
+                </div>
+              ) : plan.menuGames > plan.pack.limit ? (
                 <div className="notice">
                   <IconWarn />
                   <div>
-                    All {plan.menuGames} games go on the card. Today's core shows the first {plan.pack.limit} for now: favorites first, then
-                    A to Z. The streaming core will show them all.
+                    {plan.pack.reason} All {plan.menuGames} games still go on the card. covers.bin holds the first {plan.pack.limit}: favorites first,
+                    then A to Z.
                   </div>
                 </div>
+              ) : (
+                <div className="notice muted">{plan.pack.reason}</div>
               )}
               {plan.saves.some((x) => x.state === 'loses') && (
                 <div className="notice">
@@ -371,7 +379,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                       <span className="step-mark">
                         {state === 'done' ? <IconCheck size={12} /> : state === 'fail' ? <IconClose size={12} /> : null}
                       </span>
-                      {s.label}
+                      {s.phase === 'pack' && plan ? `Build covers.bin (pack v${plan.pack.version})` : s.label}
                       {note && <span className="dim mono step-note">{note}</span>}
                     </li>
                   );

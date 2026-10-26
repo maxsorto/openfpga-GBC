@@ -24,6 +24,10 @@ export const CRC_CACHE_FILE = path.join(CACHE_DIR, 'rom-crc.json');
 export const BACKUP_DIR = path.join(CACHE_DIR, 'covers-backups');
 // Fitted 128 and 80 pixel previews, so the grid does not redo the art work.
 export const PREVIEW_DIR = path.join(CACHE_DIR, 'previews');
+// Each game's art as it goes in the pack (45568 bytes), so a resync does not redo the image work.
+export const BLOB_DIR = path.join(CACHE_DIR, 'pack-art');
+// How many old covers.bin copies to keep. A v7 pack for 700 games is about 46 MB.
+export const BACKUPS_KEPT = 5;
 
 // How long downloaded lists stay fresh before we try to refresh them.
 export const DAT_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
@@ -61,7 +65,7 @@ export const CARD_ROM_REL = path.join('Assets', 'gbc', 'common');
 export const MANIFEST_REL = path.join(CARD_ROM_REL, 'cover-picker.json');
 
 export function ensureDirs(): void {
-  for (const d of [DATA_DIR, CUSTOM_ART_DIR, CACHE_DIR, DAT_DIR, TREE_DIR, BOXART_DIR, BACKUP_DIR, PREVIEW_DIR]) {
+  for (const d of [DATA_DIR, CUSTOM_ART_DIR, CACHE_DIR, DAT_DIR, TREE_DIR, BOXART_DIR, BACKUP_DIR, PREVIEW_DIR, BLOB_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
 }

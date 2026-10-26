@@ -62,8 +62,10 @@ export interface Library {
   source: { kind: 'folder' | 'card'; root: string; files: number; duplicates: number; unreadable: string[] };
   card: CardInfo | null;
   games: Game[];
+  /** Games the pack holds: 31 for v6, 2047 for v7. */
   maxGames: number;
   packVersion: number;
+  pack: { version: number; limit: number; streaming: boolean; reason: string; coreVersion: string | null };
   databases: {
     dats: (SourceState & { file: string; games: number })[];
     thumbs: (SourceState & { repo: string; count: number })[];
@@ -123,7 +125,18 @@ export interface SyncPlan {
   removeBytes: number;
   totalGames: number;
   totalRomBytes: number;
-  pack: { version: number; file: string; bytes: number; count: number; limit: number | null; titles: string[]; crcs: string[]; skipped: string[] };
+  pack: {
+    version: number;
+    file: string;
+    bytes: number;
+    count: number;
+    limit: number;
+    streaming: boolean;
+    reason: string;
+    titles: string[];
+    crcs: string[];
+    skipped: string[];
+  };
   space: { freeBytes: number | null; neededBytes: number; enough: boolean; removeFirst: boolean };
   signature: string;
 }
@@ -171,7 +184,7 @@ export function boxartUrl(repo: string, name: string, w = 200): string {
   return `/api/boxart?${new URLSearchParams({ repo, name, w: String(w) }).toString()}`;
 }
 
-export type SyncPhase = 'check' | 'copy' | 'remove' | 'art' | 'pack' | 'write' | 'verify';
+export type SyncPhase = 'check' | 'copy' | 'remove' | 'pack' | 'write' | 'verify';
 
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }

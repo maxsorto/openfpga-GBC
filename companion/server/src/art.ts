@@ -2,11 +2,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { CUSTOM_ART_DIR, PREVIEW_DIR } from './config.js';
+import { BLOB_DIR, CUSTOM_ART_DIR, PREVIEW_DIR } from './config.js';
 import type { ArtRef } from './choices.js';
 import { decodeImage, encodePng, placeholderImage } from './image.js';
 import type { Lane } from './limit.js';
 import { fit, quantizePreview, type RGBImage } from './pillow.js';
+import { BLOB_BYTES, artBlob } from './pack-common.js';
 import { getBoxart } from './thumbs.js';
 
 export async function loadArt(ref: ArtRef | null, title: string, lane: Lane = 'high'): Promise<RGBImage> {
@@ -86,6 +87,31 @@ export async function fittedPreview(ref: ArtRef | null, title: string, size: num
 function remember(key: string, png: Buffer): void {
   memory.set(key, png);
   if (memory.size > MEMORY_MAX) memory.delete(memory.keys().next().value!);
+}
+
+/**
+ * The art blob a pack stores for one game (128x128 then 80x80, RGB565), cached
+ * on disk. Same key rules as the previews: art by reference, title cards by title.
+ */
+export async function packBlob(ref: ArtRef | null, title: string): Promise<Buffer> {
+  const h = crypto.createHash('sha1').update(previewKey(ref, title, 0)).digest('hex');
+  const file = path.join(BLOB_DIR, h.slice(0, 2), `${h}.bin`);
+  try {
+    const b = fs.readFileSync(file);
+    if (b.length === BLOB_BYTES) return b;
+  } catch {
+    // not built yet
+  }
+  const blob = artBlob(await loadArt(ref, title));
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, blob);
+    fs.renameSync(tmp, file);
+  } catch {
+    // The cache only saves time.
+  }
+  return blob;
 }
 
 /* ---------- Fetching art for the whole library in the background ---------- */

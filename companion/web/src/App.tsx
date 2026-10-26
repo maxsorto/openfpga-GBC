@@ -10,7 +10,7 @@ import { ThemeControl } from './ThemeControl';
 import { Board } from './Board';
 import { useVolumes } from './useVolumes';
 import { VirtualGrid, type Block } from './VirtualGrid';
-import { fmtBytes, fmtDate, isVolumePath, packBytesV6 } from './util';
+import { fmtBytes, fmtDate, isVolumePath, packBytes as packSize } from './util';
 
 type View = 'library' | 'pocket';
 type Filter = 'all' | 'fav' | 'exact' | 'guessed' | 'none' | 'yours';
@@ -180,6 +180,8 @@ export function App() {
   const pocketGames = useMemo(() => all.filter((g) => g.cardState !== 'cardKept'), [all]);
   const games = view === 'library' ? libraryGames : pocketGames;
   const maxGames = lib?.maxGames ?? 31;
+  const streaming = !!lib?.pack.streaming;
+  const packVersion = lib?.pack.version ?? 6;
   const vol = volumes.find((v) => v.mountPath === activeCard?.replace(/\/$/, ''));
 
   const matches = useMemo(() => {
@@ -231,7 +233,9 @@ export function App() {
         <div className="cutoff">
           <span className="cutoff-line" />
           <span className="cutoff-text">
-            Today's core shows the {maxGames} above. Every game below is copied to the card too, ready for the streaming core.
+            {streaming
+              ? `Pack v${packVersion} holds ${maxGames} games. The games below are copied to the card but are not in the menu.`
+              : `Today's core shows the ${maxGames} above. Every game below is copied to the card too, ready for the streaming core.`}
           </span>
           <span className="cutoff-line" />
         </div>
@@ -245,7 +249,13 @@ export function App() {
         <SectionHead
           title="Recently played"
           count={pocket.played.length}
-          note={pocket.played.length ? 'Most recent first' : 'None yet. The Pocket will record play history once the streaming core is in.'}
+          note={
+            pocket.played.length
+              ? 'Most recent first'
+              : streaming
+                ? 'None yet. Play history from the Pocket shows here in a later version of the app.'
+                : 'None yet. The Pocket will record play history once the streaming core is in.'
+          }
         />
       ),
     });
@@ -267,7 +277,7 @@ export function App() {
     out.push({ kind: 'row', key: 'h-rest', height: HEAD_H, node: <SectionHead title="Everything else" count={pocket.rest.length} note="A to Z" /> });
     run('rest', pocket.rest);
     return out;
-  }, [view, games, matches, pocket, unfiltered, maxGames]);
+  }, [view, games, matches, pocket, unfiltered, maxGames, streaming, packVersion]);
 
   const shownCount = useMemo(() => blocks.reduce((n, b) => n + (b.kind === 'items' ? b.items.length : 0), 0), [blocks]);
 
@@ -275,7 +285,7 @@ export function App() {
   const dbMissing = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'missing');
   const dbStale = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'stale');
   const romBytes = games.reduce((n, g) => n + g.size, 0);
-  const packBytes = packBytesV6(Math.min(maxGames, pocketGames.filter((g) => !g.problems.length).length));
+  const packBytes = packSize(packVersion, Math.min(maxGames, pocketGames.filter((g) => !g.problems.length).length));
   const freeBytes = lib?.card?.freeBytes ?? vol?.freeBytes ?? null;
 
   const onFavorite = useCallback(async (g: Game, on: boolean) => {
@@ -461,9 +471,17 @@ export function App() {
                 <IconWarn /> cover-picker.json on the card could not be read. Sync is paused until it is moved aside.
               </div>
             )}
-            {view === 'pocket' && lib && games.length > maxGames && (
+            {view === 'pocket' && lib?.card && (streaming || games.length > maxGames) && (
               <div className="banner info">
-                All {games.length} games go on the card. Today's core shows the first {maxGames}: favorites first, then A to Z.
+                {streaming ? (
+                  <>
+                    <IconCard /> {lib.pack.reason} Favorites come first, then A to Z.
+                  </>
+                ) : (
+                  <>
+                    {lib.pack.reason} All {games.length} games still go on the card, and the first {maxGames} are in the menu: favorites first, then A to Z.
+                  </>
+                )}
               </div>
             )}
             {problems.length > 0 && (

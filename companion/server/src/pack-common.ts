@@ -14,7 +14,8 @@ export const ROM_PATH_MAX = 79;
 export const PATH_MAX = PATH_STRUCT_BYTES - 1;
 export const TITLE_MAX = 39;
 
-export interface PackGame {
+/** What a pack entry needs to know about a game. */
+export interface PackEntry {
   /** Shown in the picker. Non ASCII characters become "?", cut to 39 bytes. */
   title: string;
   /** ROM file name inside /Assets/<platform>/common. */
@@ -22,11 +23,20 @@ export interface PackGame {
   /** Folder platform, "gbc" today. */
   platform: string;
   romSize: number;
-  art: RGBImage;
-  /** CRC32 of the ROM. v6 does not store it; v7 will. */
+  /** CRC32 of the whole ROM file, 8 hex digits. v6 does not store it; v7 does. */
   crc?: string;
-  /** Starred. v6 does not store it; v7 will. */
+  /** Starred. Not stored yet. */
   favorite?: boolean;
+}
+
+/** A game with its art decoded, for building a pack in memory (tests, small packs). */
+export interface PackGame extends PackEntry {
+  art: RGBImage;
+}
+
+/** A game whose 45568 byte art blob is made only when the writer reaches it. */
+export interface StreamGame extends PackEntry {
+  blob: () => Promise<Buffer>;
 }
 
 export interface GamePaths {
@@ -78,17 +88,162 @@ export function artBlob(art: RGBImage): Buffer {
   return Buffer.concat([toRgb565(fit(art, CEN)), toRgb565(fit(art, TH))]);
 }
 
+export const HEADER_BYTES = 16;
+export const RESERVED_BYTES = 512;
+export const ENTRY_BYTES = 128;
+/** One game's art: 128x128 then 80x80, RGB565. */
+export const BLOB_BYTES = (CEN * CEN + TH * TH) * 2;
+
+/**
+ * One pack format. Every version shares the layout:
+ *   header 16 B: "GBCV" | ver u16 | count u16 | 128 u16 | 80 u16 | 4 pad
+ *   reserved 512 B
+ *   entries, count x 128 B (layout per version)
+ *   blobs, count x stride B (the art, then zeros up to the stride)
+ *   path structs, count x 3 x 256 B: ROM, .sav, .sus
+ *   one 256 B path struct: /Saves/<platform>/common/picker.log
+ */
+export interface PackFormat {
+  version: number;
+  maxGames: number;
+  /** Bytes per art blob in the file. */
+  stride: number;
+  entry(g: PackEntry): Buffer;
+}
+
 export interface PackBuildOptions {
   /** Platform folder for the picker.log path. */
   logPlatform?: string;
   onProgress?: (done: number) => void;
 }
 
-/** One pack format. A v7 writer will implement the same shape. */
+export function packSize(fmt: PackFormat, count: number): number {
+  return HEADER_BYTES + RESERVED_BYTES + count * (ENTRY_BYTES + fmt.stride + 3 * PATH_STRUCT_BYTES) + PATH_STRUCT_BYTES;
+}
+
+function checkGames(fmt: PackFormat, games: PackEntry[]): void {
+  if (games.length === 0) throw new Error('No games to pack');
+  if (games.length > fmt.maxGames) throw new Error(`Pack v${fmt.version} holds at most ${fmt.maxGames} games`);
+  for (const g of games) {
+    const problems = pathProblems(g.platform, g.romFile);
+    if (problems.length) throw new Error(`${g.romFile}: ${problems.join(' ')}`);
+  }
+}
+
+function header(fmt: PackFormat, count: number): Buffer {
+  const h = Buffer.alloc(HEADER_BYTES + RESERVED_BYTES);
+  h.write('GBCV', 0, 'ascii');
+  h.writeUInt16LE(fmt.version, 4);
+  h.writeUInt16LE(count, 6);
+  h.writeUInt16LE(CEN, 8);
+  h.writeUInt16LE(TH, 10);
+  return h;
+}
+
+function pathStructs(games: PackEntry[], logPlatform: string): Buffer {
+  const out: Buffer[] = [];
+  for (const g of games) {
+    const p = gamePaths(g.platform, g.romFile);
+    for (const q of [p.rom, p.sav, p.sus]) out.push(fixed(Buffer.from(q, 'utf8'), PATH_STRUCT_BYTES));
+  }
+  out.push(fixed(Buffer.from(`/Saves/${logPlatform}/common/picker.log`, 'utf8'), PATH_STRUCT_BYTES));
+  return Buffer.concat(out);
+}
+
+function padBlob(fmt: PackFormat, blob: Buffer): Buffer {
+  if (blob.length !== BLOB_BYTES) throw new Error(`Art blob is ${blob.length} bytes, expected ${BLOB_BYTES}`);
+  if (fmt.stride === BLOB_BYTES) return blob;
+  const out = Buffer.alloc(fmt.stride);
+  blob.copy(out, 0);
+  return out;
+}
+
+/** The whole pack in memory. Fine for 31 games and for tests. */
+export function buildPackWith(fmt: PackFormat, games: PackGame[], opts: PackBuildOptions = {}): Buffer {
+  checkGames(fmt, games);
+  const parts: Buffer[] = [header(fmt, games.length), ...games.map((g) => fmt.entry(g))];
+  games.forEach((g, i) => {
+    parts.push(padBlob(fmt, artBlob(g.art)));
+    opts.onProgress?.(i + 1);
+  });
+  parts.push(pathStructs(games, opts.logPlatform ?? 'gbc'));
+  return Buffer.concat(parts);
+}
+
+/**
+ * Stream a pack to `sink`, one piece at a time. Only one game's art is in
+ * memory at once, so a 2047 game v7 pack (130 MB) never sits in a buffer.
+ */
+export async function writePackWith(
+  fmt: PackFormat,
+  games: StreamGame[],
+  sink: (chunk: Buffer) => void,
+  opts: PackBuildOptions = {},
+): Promise<number> {
+  checkGames(fmt, games);
+  let written = 0;
+  const put = (b: Buffer) => {
+    sink(b);
+    written += b.length;
+  };
+  put(header(fmt, games.length));
+  put(Buffer.concat(games.map((g) => fmt.entry(g))));
+  for (let i = 0; i < games.length; i++) {
+    put(padBlob(fmt, await games[i].blob()));
+    opts.onProgress?.(i + 1);
+  }
+  put(pathStructs(games, opts.logPlatform ?? 'gbc'));
+  if (written !== packSize(fmt, games.length)) throw new Error('Pack came out the wrong size');
+  return written;
+}
+
+/** One pack format, ready to use: in memory or streamed. */
 export interface PackWriter {
   version: number;
-  /** Most games the format holds, or null for no limit. */
-  maxGames: number | null;
+  /** Most games the format holds. */
+  maxGames: number;
   build(games: PackGame[], opts?: PackBuildOptions): Buffer;
+  write(games: StreamGame[], sink: (chunk: Buffer) => void, opts?: PackBuildOptions): Promise<number>;
   expectedSize(count: number): number;
 }
+
+export function makeWriter(fmt: PackFormat): PackWriter {
+  return {
+    version: fmt.version,
+    maxGames: fmt.maxGames,
+    build: (games, opts) => buildPackWith(fmt, games, opts),
+    write: (games, sink, opts) => writePackWith(fmt, games, sink, opts),
+    expectedSize: (n) => packSize(fmt, n),
+  };
+}
+
+export interface PackSummary {
+  version: number;
+  count: number;
+  titles: string[];
+  roms: string[];
+  /** v7 only. */
+  crcs: string[];
+}
+
+/** Read the header and entries back from the start of a pack, for display and checks. */
+export function readPackSummary(buf: Buffer): PackSummary | null {
+  if (buf.length < HEADER_BYTES || buf.toString('ascii', 0, 4) !== 'GBCV') return null;
+  const version = buf.readUInt16LE(4);
+  const count = buf.readUInt16LE(6);
+  const titles: string[] = [];
+  const roms: string[] = [];
+  const crcs: string[] = [];
+  const pathAt = version >= 7 ? 52 : 48;
+  for (let i = 0; i < count; i++) {
+    const o = HEADER_BYTES + RESERVED_BYTES + i * ENTRY_BYTES;
+    if (o + ENTRY_BYTES > buf.length) break;
+    titles.push(buf.toString('latin1', o, o + 40).replace(/\0.*$/s, ''));
+    roms.push(buf.toString('utf8', o + pathAt, o + ENTRY_BYTES).replace(/\0.*$/s, ''));
+    if (version >= 7) crcs.push(buf.readUInt32LE(o + 48).toString(16).toUpperCase().padStart(8, '0'));
+  }
+  return { version, count, titles, roms, crcs };
+}
+
+/** Bytes to read from the start of a pack to get every entry. */
+export const PACK_HEAD_MAX = HEADER_BYTES + RESERVED_BYTES + 2047 * ENTRY_BYTES;

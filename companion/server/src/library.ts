@@ -9,7 +9,8 @@ import { loadChoices, type ArtRef } from './choices.js';
 import { loadDats, type DatIndex } from './dat.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
 import { autoMatchCached, cleanTitle, type MatchStatus } from './match.js';
-import { CURRENT_PACK_VERSION, MAX_GAMES, TITLE_MAX, asciiTitle, compareTitles, pathProblems, readPackSummary, type PlayHistory } from './pack.js';
+import { PACK_HEAD_MAX, TITLE_MAX, asciiTitle, compareTitles, pathProblems, readPackSummary, type PlayHistory } from './pack.js';
+import { choosePack } from './core.js';
 import { codepointCompare, fileCrc, flushCrcCache, isRomName, scanLibrary, scanRoms, type LibraryFile } from './roms.js';
 import { loadThumbs, REPOS, type ThumbIndex } from './thumbs.js';
 import { folderSpace } from './volumes.js';
@@ -91,8 +92,11 @@ export interface Library {
   card: CardInfo | null;
   /** A to Z by title. */
   games: Game[];
+  /** How many games the pack holds: 31 for v6, 2047 for v7. */
   maxGames: number;
   packVersion: number;
+  /** Which pack the card gets and why. */
+  pack: { version: number; limit: number; streaming: boolean; reason: string; coreVersion: string | null };
   databases: {
     dats: DatIndex['sources'];
     thumbs: ThumbIndex['sources'];
@@ -119,7 +123,7 @@ function coversInfo(root: string): CardInfo['covers'] {
   try {
     const st = fs.statSync(file);
     const fd = fs.openSync(file, 'r');
-    const head = Buffer.alloc(Math.min(st.size, 528 + MAX_GAMES * 128));
+    const head = Buffer.alloc(Math.min(st.size, PACK_HEAD_MAX));
     fs.readSync(fd, head, 0, head.length, 0);
     fs.closeSync(fd);
     const s = readPackSummary(head);
@@ -404,6 +408,8 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
   }
   games.sort(compareTitles);
 
+  const pack = choosePack(card, games.filter((g) => g.cardState !== 'cardKept' && !g.problems.length).length);
+
   let cardInfo: CardInfo | null = null;
   if (card) {
     const romFolder = CARD_ROM_REL.split(path.sep).join('/');
@@ -421,8 +427,9 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     source,
     card: cardInfo,
     games,
-    maxGames: MAX_GAMES,
-    packVersion: CURRENT_PACK_VERSION,
+    maxGames: pack.limit,
+    packVersion: pack.version,
+    pack: { version: pack.version, limit: pack.limit, streaming: pack.streaming, reason: pack.reason, coreVersion: pack.core.version },
     databases: { dats: dats.sources, thumbs: thumbs.sources },
   };
 }

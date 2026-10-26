@@ -93,12 +93,27 @@ save without a ROM works again if the game comes back under the same name.
 
 If the library folder has no ROMs at all, sync stops before it removes anything.
 
-### Today's core and 31 games
+### Pack v6 or v7: it depends on the core
 
-Today's core reads pack v6 and shows at most 31 games. Sync still copies every game.
-The pack holds the first 31 in Pocket order, so favorites come first. The Pocket view
-marks where the 31 end. The streaming core will read pack v7 and show them all; its
-writer will sit next to the v6 one in `server/src/pack.ts`.
+Sync reads `Cores/maxsorto.GBC/core.json` on the card and looks at
+`core.metadata.version`.
+
+| Core on the card | covers.bin | Games in the menu |
+| --- | --- | --- |
+| Version ends in `-cover2` or higher (`-coverN`, N of 2 or more): the streaming core | Pack v7 | All of them, up to 2047 |
+| Any other version, or no core found | Pack v6 | The first 31 |
+
+Either way, sync copies every game, and the menu order is the same: games you played,
+then favorites A to Z, then everything else A to Z. The plan says which format it chose
+and why, for example "Streaming core found (1.4.0-cover2): all 702 games" or "This
+core (1.4.0-cover1) shows 31 games. Install build 17 to see all." With v6 the Pocket
+view marks where the 31 end. With v7 there is no such line.
+
+A v7 pack is about 66 KB per game: 46.6 MB for 702 games. Sync streams it to a file
+next to `covers.bin`, one game's art at a time, flushes it, reads it back to check it,
+then renames it into place, so the old pack stays intact until the new one is proven.
+The space check in the plan counts the whole new pack. Each game's packed art is
+cached on the Mac, so a resync of 702 games rebuilds the pack in under a second.
 
 ### No library folder
 
@@ -164,9 +179,23 @@ They are still copied, but left out of the menu until you rename them.
 
 ## The cover pack
 
-The format is defined by `tools/make_cover_pack.py` (v6), and `server/src/pack-v6.ts`
-follows it. `server/src/pack.ts` picks the writer and the menu order;
-`server/src/pack-common.ts` has what every version shares (paths, titles, art). The art step (`fit()`: Lanczos resize, Gaussian blur, darken, sharpen,
+Both formats are defined by `tools/make_cover_pack.py` (v6 by default, v7 with `--v7`).
+
+| | v6 | v7 |
+| --- | --- | --- |
+| Games | up to 31 | up to 2047 |
+| Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad[3], size u32, CRC32 u32, path[76] |
+| Art per game | 45568 B, packed back to back | the same 45568 B, padded with zeros to 65536 B |
+
+Both start with a 16 byte header (`GBCV`, version, count, 128, 80) and 512 reserved
+bytes, and end with three 256 byte path structs per game (ROM, `.sav`, `.sus`) and one
+for `picker.log`. The CRC32 in v7 is of the whole ROM file, so the core can key play
+history by game. The fixed 64 KB stride lets the core read any cover by its index.
+
+`server/src/pack-common.ts` has the shared layout and both ways to write it (in memory,
+or streamed one game at a time). `server/src/pack-v6.ts` and `server/src/pack-v7.ts`
+describe each entry and stride. `server/src/pack.ts` has the writers and the menu order,
+and `server/src/core.ts` picks the format from the card. The art step (`fit()`: Lanczos resize, Gaussian blur, darken, sharpen,
 RGB565) is a direct port of the Pillow 11.3 C code in `server/src/pillow.ts`, including
 its fixed point and single precision math, so packs come out byte-identical to the
 Python tool.
@@ -174,7 +203,8 @@ Python tool.
 Tests (`npm test`) check this against the real Python tool and Pillow:
 
 - `pack-compat.test.ts`: three fake ROMs with generated PNG art. The TypeScript pack
-  and the Python pack are identical, byte for byte.
+  and the Python pack are identical, byte for byte, in v6 and in v7. A 40 game v7 pack
+  matches too, both built in memory and streamed.
 - The same test with a ROM that has no art: everything but that game's title card
   image is identical. The title card text is drawn by a different text engine
   (librsvg instead of FreeType), so roughly 15% of its pixels differ.
@@ -191,6 +221,10 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   under `.gbc` is adopted and keeps its name, a different Pokemon Silver dump on the card
   is kept, a ROM hack only on the card stays in the menu, saves are matched to ROMs (and
   flagged when a game leaves), and an empty library folder removes nothing.
+- `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
+  give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
+  with every game, favorites first, each entry carrying its ROM's CRC32; switching the
+  core back gives v6 with 31.
 - `order.test.ts`: played, then favorites, then the rest, as the Pocket shows them.
 
 The tests use the venv at `cover-picker/.venv` (Pillow 11.3). Set
@@ -211,9 +245,11 @@ which does not matter on the device.
   - `thumbnail-lists/`: box art file lists from GitHub. Refreshed after 7 days.
   - `boxart/`: downloaded box art.
   - `previews/`: the fitted covers the grid shows, so each is built once.
+  - `pack-art/`: each game's art as it goes in the pack, so a resync is quick.
   - `rom-crc.json`: CRC32 per file path, size and date, so ROMs are hashed once. A
     rescan of 700 ROMs reads no ROM data.
   - `covers-backups/`: the previous `covers.bin` from the card, saved before each sync.
+    The last 5 are kept.
 
 The cache can be deleted at any time. `COMPANION_DATA_DIR` and `COMPANION_CACHE_DIR`
 override both locations. `COMPANION_OFFLINE=1` turns off all downloads.
@@ -247,9 +283,11 @@ companion/
       art.ts          loading art, fitted previews and their disk cache
       pillow.ts       port of the Pillow steps used by make_cover_pack.py
       image.ts        decoding, PNG encoding, title cards
-      pack.ts         which pack writer, and the menu order
-      pack-common.ts  what every pack version shares
-      pack-v6.ts      covers.bin writer for today's core
+      core.ts         which pack format the card's core reads
+      pack.ts         the pack writers, and the menu order
+      pack-common.ts  the layout every pack version shares, in memory or streamed
+      pack-v6.ts      pack v6: 31 games, for today's core
+      pack-v7.ts      pack v7: up to 2047 games, for the streaming core
     test/             sync tests and compatibility tests against the Python tool
   web/      Vite + React UI. The grid only draws the rows near the screen.
 ```
@@ -258,8 +296,8 @@ companion/
 
 - One library folder. Sync copies into `Assets/gbc/common`, because that is where the
   core looks.
-- Today's core shows the first 31 games. All of them are on the card for the streaming
-  core.
+- Today's core shows the first 31 games. All of them are on the card, and the streaming
+  core (`-cover2`) shows them all.
 - Play history is not read yet. `playHistory()` in `server/src/library.ts` is where
   `launcher.cfg` will be parsed.
 - macOS only.

@@ -10,7 +10,9 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PYTHON, writeFakeRom, writeFixturePng } from './fixtures.js';
 import { decodeImage, placeholderImage } from '../src/image.js';
-import { buildPack, expectedPackSize, BLOB_BYTES, ENTRY_BYTES, type PackGame } from '../src/pack.js';
+import { artBlob as artBlobOf } from '../src/pack-common.js';
+import { buildPack, expectedPackSize, packWriter, readPackSummary, BLOB_BYTES, ENTRY_BYTES, STRIDE_V7, type PackGame, type StreamGame } from '../src/pack.js';
+import { crc32 } from '../src/roms.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '.out', 'pack');
@@ -35,18 +37,18 @@ function makeFixture(name: string, roms: [string, number][], covers: [string, nu
   return f;
 }
 
-function runPython(f: Fixture, out: string): Buffer {
-  execFileSync(PYTHON, [MAKE_PACK, '--roms', f.roms, '--covers', f.covers, '--out', out], { stdio: 'pipe' });
+function runPython(f: Fixture, out: string, v7 = false): Buffer {
+  execFileSync(PYTHON, [MAKE_PACK, '--roms', f.roms, '--covers', f.covers, '--out', out, ...(v7 ? ['--v7'] : [])], { stdio: 'pipe' });
   return fs.readFileSync(out);
 }
 
 /** Same inputs, built the way the app does it (title = file stem, as the Python tool does). */
-async function runTs(f: Fixture): Promise<Buffer> {
+async function tsGames(f: Fixture, max: number): Promise<PackGame[]> {
   const roms = fs
     .readdirSync(f.roms)
     .filter((x) => /\.(gbc|gb)$/i.test(x))
     .sort(codepointSort)
-    .slice(0, 31);
+    .slice(0, max);
   const covers = new Map(
     fs
       .readdirSync(f.covers)
@@ -63,9 +65,14 @@ async function runTs(f: Fixture): Promise<Buffer> {
       platform: 'gbc',
       romSize: fs.statSync(path.join(f.roms, rom)).size,
       art: cover ? await decodeImage(fs.readFileSync(cover)) : await placeholderImage(stem),
+      crc: crc32(fs.readFileSync(path.join(f.roms, rom))),
     });
   }
-  return buildPack(games);
+  return games;
+}
+
+async function runTs(f: Fixture): Promise<Buffer> {
+  return buildPack(await tsGames(f, 31));
 }
 
 function firstDiff(a: Buffer, b: Buffer): number {
@@ -119,4 +126,53 @@ test('placeholder art: everything but the placeholder blob is byte-identical', a
   for (let i = blobStart; i < blobEnd; i += 2) if (ts.readUInt16LE(i) !== py.readUInt16LE(i)) words++;
   const pct = ((words / (BLOB_BYTES / 2)) * 100).toFixed(1);
   console.log(`placeholder blob: ${words} of ${BLOB_BYTES / 2} pixels differ (${pct}%). Text is rendered by a different engine.`);
+});
+
+const V7_ROMS: [string, number][] = [
+  ['Pokemon - Crystal Version.gbc', 65536],
+  ['Tetris.gb', 32768],
+  ["Legend of Zelda, The - Link's Awakening DX.gbc", 49152],
+];
+const V7_COVERS: [string, number, number][] = [
+  ['Pokemon - Crystal Version.png', 512, 512],
+  ['tetris.png', 300, 217],
+  ["Legend of Zelda, The - Link's Awakening DX.png", 256, 340],
+];
+
+test('pack v7 is byte-identical to make_cover_pack.py --v7 (3 ROMs, all with art)', async () => {
+  const f = makeFixture('v7-with-art', V7_ROMS, V7_COVERS);
+  const py = runPython(f, path.join(OUT, 'v7-with-art', 'python.bin'), true);
+  const v7 = packWriter(7);
+  const ts = v7.build(await tsGames(f, 2047));
+  assert.equal(py.length, v7.expectedSize(3));
+  assert.equal(ts.length, py.length, 'file size');
+  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  const s = readPackSummary(ts)!;
+  assert.equal(s.version, 7);
+  assert.deepEqual(s.crcs, (await tsGames(f, 2047)).map((g) => g.crc));
+});
+
+test('pack v7 streamed write equals the in-memory build, and holds more than 31 games', async () => {
+  // 40 ROMs with small art, so the Python tool runs fast; the names sort the same in both tools.
+  const roms: [string, number][] = Array.from({ length: 40 }, (_, i) => [`Game ${String(i).padStart(2, '0')}.${i % 3 ? 'gbc' : 'gb'}`, 4096 + i * 512]);
+  const covers: [string, number, number][] = roms.map(([r], i) => [r.replace(/\.[^.]+$/, '.png'), 64 + (i % 5) * 20, 60 + (i % 4) * 25]);
+  const f = makeFixture('v7-forty', roms, covers);
+  const py = runPython(f, path.join(OUT, 'v7-forty', 'python.bin'), true);
+  const v7 = packWriter(7);
+  const games = await tsGames(f, 2047);
+  assert.equal(games.length, 40);
+  const built = v7.build(games);
+  assert.equal(firstDiff(built, py), -1, 'in-memory build matches Python');
+
+  const chunks: Buffer[] = [];
+  let biggest = 0;
+  const stream: StreamGame[] = games.map(({ art, ...g }) => ({ ...g, blob: async () => artBlobOf(art) }));
+  const n = await v7.write(stream, (c) => {
+    chunks.push(c);
+    biggest = Math.max(biggest, c.length);
+  });
+  assert.equal(n, py.length);
+  assert.equal(firstDiff(Buffer.concat(chunks), py), -1, 'streamed write matches Python');
+  // Nothing close to the whole pack is ever one buffer: the largest piece is the path structs.
+  assert.ok(biggest <= Math.max(STRIDE_V7, 40 * 3 * 256 + 256), `largest chunk ${biggest}`);
 });

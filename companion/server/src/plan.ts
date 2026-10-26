@@ -90,8 +90,12 @@ export interface SyncPlan {
     file: string;
     bytes: number;
     count: number;
-    /** The core shows only this many for now. */
-    limit: number | null;
+    /** Most games this pack holds: 31 for v6, 2047 for v7. */
+    limit: number;
+    /** The core on the card streams covers (v7). */
+    streaming: boolean;
+    /** Why this format: what core was found. */
+    reason: string;
     titles: string[];
     crcs: string[];
     /** Left out of the pack because their path is too long for the core. */
@@ -239,11 +243,11 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
     // no Saves folder yet
   }
 
-  const writer = packWriter();
+  const writer = packWriter(library.pack.version);
   const menu = library.games.filter((g) => g.cardState !== 'cardKept');
   const ordered = menuOrder(menu, playHistory(card));
   const packable = ordered.filter((g) => !g.problems.length);
-  const packGames = writer.maxGames == null ? packable : packable.slice(0, writer.maxGames);
+  const packGames = packable.slice(0, writer.maxGames);
   const packBytes = packGames.length ? writer.expectedSize(packGames.length) : 0;
 
   const block = clusterSize(card);
@@ -282,6 +286,8 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       bytes: packBytes,
       count: packGames.length,
       limit: writer.maxGames,
+      streaming: library.pack.streaming,
+      reason: library.pack.reason,
       titles: packGames.map((g) => g.title),
       crcs: packGames.map((g) => g.crc),
       skipped: ordered.filter((g) => g.problems.length).map((g) => g.file),
@@ -297,6 +303,7 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
         remove.map((r) => [r.crc, r.file]),
         adopt.map((a) => [a.crc, a.file]),
         keptCard.map((k) => [k.crc, k.cardFile]),
+        writer.version,
         packGames.map((g) => [g.crc, g.title, g.file, g.art]),
       ]),
     )
