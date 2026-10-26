@@ -43,6 +43,20 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
   const [result, setResult] = useState<Extract<SyncEvent, { type: 'done' }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [eject, setEject] = useState<{ state: 'idle' | 'busy' | 'ok' | 'fail'; steps: string[] }>({ state: 'idle', steps: [] });
+  const [replan, setReplan] = useState(0);
+  const [changed, setChanged] = useState(false);
+
+  // Per game: keep the card's own copy, or use the library's. Plans again after.
+  async function chooseCopy(crc: string, useLibrary: boolean) {
+    try {
+      await api.saveChoices({ [crc]: { useLibraryCopy: useLibrary ? true : null } });
+      setChanged(true);
+      setReplan((n) => n + 1);
+    } catch (e) {
+      setError((e as Error).message);
+      setStage('error');
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -61,7 +75,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
     return () => {
       alive = false;
     };
-  }, [card]);
+  }, [card, replan]);
 
   const canEject = isVolumePath(card);
 
@@ -118,6 +132,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
       if (file && current === 'copy') return `${file.index} of ${file.total}`;
       return `${plan.copy.length}`;
     }
+    if (p === 'check' && plan.adopt.length) return `${plan.adopt.length} adopted`;
     if (p === 'remove') return plan.remove.length ? `${plan.remove.length}` : stage === 'done' ? 'nothing to remove' : null;
     if (p === 'art' && current === 'art') return `${Math.round(progress * 100)}%`;
     return null;
@@ -135,7 +150,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
             <div className="modal-sub">{card}</div>
           </div>
           {stage !== 'running' && (
-            <button className="icon-btn" onClick={() => onClose(stage === 'done')} aria-label="Close">
+            <button className="icon-btn" onClick={() => onClose(stage === 'done' || changed)} aria-label="Close">
               <IconClose />
             </button>
           )}
@@ -153,7 +168,11 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
               <div className="tiles">
                 <Tile label="Copy" value={`${plan.copy.length}`} sub={plan.copy.length ? fmtBytes(plan.copyBytes) : 'nothing new'} />
                 <Tile label="Remove" value={`${plan.remove.length}`} sub={plan.remove.length ? fmtBytes(plan.removeBytes) : 'nothing'} tone={plan.remove.length ? 'warn' : undefined} />
-                <Tile label="Unchanged" value={`${plan.unchanged}`} sub="skipped" tone="dim" />
+                {plan.adopt.length > 0 ? (
+                  <Tile label="Adopt" value={`${plan.adopt.length}`} sub={`${plan.unchanged} unchanged`} />
+                ) : (
+                  <Tile label="Unchanged" value={`${plan.unchanged}`} sub="skipped" tone="dim" />
+                )}
                 <Tile label={`Pack v${plan.pack.version}`} value={`${plan.pack.count}`} sub={fmtBytes(plan.pack.bytes)} />
               </div>
 
@@ -182,12 +201,23 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                   <IconWarn /> cover-picker.json on the card could not be read: {plan.manifest.error}. Sync will not run until it is moved aside.
                 </div>
               )}
-              {plan.pack.limit != null && plan.totalGames > plan.pack.limit && (
+              {plan.pack.limit != null && plan.menuGames > plan.pack.limit && (
                 <div className="notice">
                   <IconWarn />
                   <div>
-                    All {plan.totalGames} games go on the card. Today's core shows the first {plan.pack.limit} for now: favorites first, then
+                    All {plan.menuGames} games go on the card. Today's core shows the first {plan.pack.limit} for now: favorites first, then
                     A to Z. The streaming core will show them all.
+                  </div>
+                </div>
+              )}
+              {plan.saves.some((x) => x.state === 'loses') && (
+                <div className="notice">
+                  <IconWarn />
+                  <div>
+                    {(() => {
+                      const n = plan.saves.filter((x) => x.state === 'loses').length;
+                      return `${n} ${n === 1 ? 'save loses its' : 'saves lose their'} ROM in this sync. The ${n === 1 ? 'save stays' : 'saves stay'} on the card, and ${n === 1 ? 'works' : 'work'} again if the game comes back under the same name.`;
+                    })()}
                   </div>
                 </div>
               )}
@@ -208,8 +238,57 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                       {plan.copy.map((c) => (
                         <li key={c.file}>
                           <span className="grow ellipsis">{c.file}</span>
-                          {c.reason !== 'new' && <span className="chip guessed">{c.reason === 'changed' ? 'Changed' : 'Missing'}</span>}
+                          {c.reason !== 'new' && (
+                            <span className="chip guessed">{c.reason === 'changed' ? 'Changed' : c.reason === 'missing' ? 'Missing' : 'Replaces card copy'}</span>
+                          )}
+                          {c.reason === 'replace' && (
+                            <button className="link small" onClick={() => chooseCopy(c.crc, false)}>
+                              Keep the card's
+                            </button>
+                          )}
                           <span className="dim mono">{fmtBytes(c.size)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {plan.adopt.length > 0 && (
+                  <details open={plan.adopt.length <= 6}>
+                    <summary>
+                      Adopted <span className="count">{plan.adopt.length}</span>
+                    </summary>
+                    <p className="plan-note">
+                      You put these on the card, and they are the same ROMs as in your library. The app takes them over under their current names, so
+                      their saves keep working. From now on they are removed if they leave the library.
+                    </p>
+                    <ul className="plan-list">
+                      {plan.adopt.map((a) => (
+                        <li key={a.file}>
+                          <span className="grow ellipsis">{a.file}</span>
+                          <span className="dim mono">{a.crc}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {plan.keptCard.length > 0 && (
+                  <details open>
+                    <summary>
+                      Kept the card's version <span className="count">{plan.keptCard.length}</span>
+                    </summary>
+                    <p className="plan-note">
+                      A different ROM with the same name is already on the card, and its save is tied to that name. The card's copy stays and the
+                      library's is not copied.
+                    </p>
+                    <ul className="plan-list">
+                      {plan.keptCard.map((k) => (
+                        <li key={k.crc}>
+                          <span className="grow ellipsis" title={`Library: ${k.libraryFile} (${k.crc}). Card: ${k.cardFile} (${k.cardCrc ?? '?'})`}>
+                            {k.cardFile}
+                          </span>
+                          <button className="link small" onClick={() => chooseCopy(k.crc, true)}>
+                            Use the library's
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -241,6 +320,26 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                       {plan.cardOnly.map((f) => (
                         <li key={f}>
                           <span className="grow ellipsis">{f}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {plan.saves.length > 0 && (
+                  <details open={plan.saves.some((x) => x.state === 'loses')}>
+                    <summary>
+                      Saves <span className="count">{plan.saves.length}</span>
+                    </summary>
+                    <p className="plan-note">Each save and the ROM it belongs to after sync. Saves are only read, never moved or renamed.</p>
+                    <ul className="plan-list">
+                      {plan.saves.map((x) => (
+                        <li key={x.file}>
+                          <span className="grow ellipsis">{x.file}</span>
+                          {x.rom ? (
+                            <span className="dim ellipsis save-rom">{x.rom}</span>
+                          ) : (
+                            <span className={`chip ${x.state === 'loses' ? 'problem' : 'none'}`}>{x.state === 'loses' ? 'Loses its ROM' : 'No ROM'}</span>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -305,7 +404,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                   <div>
                     <div className="success-title">Synced and verified</div>
                     <div className="dim">
-                      Copied {result.copied}, removed {result.removed}, {result.unchanged} unchanged. covers.bin has {result.count} games ({fmtBytes(result.bytes)}) and
+                      Copied {result.copied}, removed {result.removed}
+                      {plan?.adopt.length ? `, adopted ${plan.adopt.length}` : ''}, {result.unchanged} unchanged. covers.bin has {result.count} games ({fmtBytes(result.bytes)}) and
                       matches byte for byte.
                     </div>
                   </div>
@@ -342,7 +442,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
           <span className="grow" />
           {(stage === 'planning' || stage === 'plan') && (
             <>
-              <button onClick={() => onClose(false)}>Cancel</button>
+              <button onClick={() => onClose(changed)}>Cancel</button>
               <button className="primary" onClick={start} disabled={!plan || !plan.space.enough || !!plan.manifest.error}>
                 {plan && plan.copy.length ? `Copy ${plan.copy.length} and write` : 'Write covers.bin'}
               </button>

@@ -70,7 +70,12 @@ function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRenam
   };
 
   const blocked = game.problems.length > 0;
-  const fileTitle = game.renamed ? `${game.file} on the card. In the library: ${game.paths.join(', ')}` : game.paths.join('\n');
+  const fileTitle =
+    game.origin === 'card'
+      ? `${game.file} on the card`
+      : game.renamed
+        ? `${game.file} on the card. In the library: ${game.paths.join(', ')}`
+        : game.paths.join('\n');
 
   return (
     <div className={`card ${game.favorite ? 'fav' : ''} ${beyondLimit ? 'beyond' : ''}`}>
@@ -127,7 +132,20 @@ function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRenam
               {STATUS_LABEL[game.status]}
             </span>
           )}
-          <span className="sys">{game.isGb ? 'GB' : 'GBC'}</span>
+          {game.origin === 'card' && (
+            <span className="chip card-only" title="On the card, not in your library folder. It stays in the menu and sync never removes it.">
+              Card only
+            </span>
+          )}
+          {game.cardState === 'cardKept' && (
+            <span
+              className="chip card-only"
+              title={`A different ROM named ${game.cardFile} is already on the card. Its save is tied to that name, so the card's copy is kept and this one is not copied. You can change this in the sync plan.`}
+            >
+              Card's copy
+            </span>
+          )}
+          {game.origin === 'library' && game.cardState !== 'cardKept' && <span className="sys">{game.isGb ? 'GB' : 'GBC'}</span>}
           {game.paths.length > 1 && (
             <span className="sys" title={`Same ROM ${game.paths.length} times in the library:\n${game.paths.join('\n')}`}>
               x{game.paths.length}

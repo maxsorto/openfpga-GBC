@@ -206,16 +206,31 @@ test('a stale plan is refused', async () => {
   fs.rmSync(path.join(LIB, 'GB', 'Late Arrival.gb'));
 });
 
-test('a file the app did not place is never overwritten: the game gets another name', async () => {
-  // Someone copies a different ROM onto the card under a name the library will want.
+test('a different ROM you put on the card under a library name wins, unless you choose the library copy', async () => {
+  // Someone copies a different dump onto the card under a name the library also has.
   writeFakeRom(path.join(ROMDIR, 'Quarth.gb'), 4096, 6001);
   writeFakeRom(path.join(LIB, 'GB', 'Quarth.gb'), 4096, 6002);
   const hand = fileCrc('Quarth.gb');
-  const { plan } = await makePlan({ library: LIB, card: CARD });
-  assert.deepEqual(plan.copy.map((c) => c.file), ['Quarth (GB).gb']);
+  const libCrc = crc32(fs.readFileSync(path.join(LIB, 'GB', 'Quarth.gb')));
+  let { plan } = await makePlan({ library: LIB, card: CARD });
+  assert.deepEqual(plan.copy, []);
+  assert.deepEqual(plan.keptCard.map((k) => [k.libraryFile, k.cardFile, k.cardCrc]), [['GB/Quarth.gb', 'Quarth.gb', hand]]);
+  assert.ok(plan.cardOnly.includes('Quarth.gb'));
   await runSync({ library: LIB, card: CARD, signature: plan.signature });
   assert.equal(fileCrc('Quarth.gb'), hand);
   assert.ok(!manifest().placed.some((e: { file: string }) => e.file === 'Quarth.gb'));
+
+  // Per game choice: use the library's copy. The card's copy is saved on the Mac first.
+  updateChoices({ [libCrc]: { useLibraryCopy: true } });
+  ({ plan } = await makePlan({ library: LIB, card: CARD }));
+  assert.deepEqual(plan.copy.map((c) => [c.file, c.reason, c.replacesCrc]), [['Quarth.gb', 'replace', hand]]);
+  assert.deepEqual(plan.keptCard, []);
+  await runSync({ library: LIB, card: CARD, signature: plan.signature });
+  assert.equal(fileCrc('Quarth.gb'), libCrc);
+  assert.ok(manifest().placed.some((e: { file: string; crc: string }) => e.file === 'Quarth.gb' && e.crc === libCrc));
+  const backups = fs.readdirSync(path.join(OUT, 'cache', 'covers-backups', 'replaced-roms'));
+  assert.equal(backups.length, 1);
+  assert.equal(crc32(fs.readFileSync(path.join(OUT, 'cache', 'covers-backups', 'replaced-roms', backups[0]))), hand);
   fs.rmSync(path.join(LIB, 'GB', 'Quarth.gb'));
 });
 
@@ -223,19 +238,21 @@ test('renaming a ROM in the library changes nothing on the card', async () => {
   fs.renameSync(path.join(LIB, 'GB', 'Tetris.gb'), path.join(LIB, 'GB', 'Tetris (World).gb'));
   fs.rmSync(path.join(LIB, 'GB', 'Tetris (copy).gb'));
   const { plan } = await makePlan({ library: LIB, card: CARD });
-  // Quarth (GB).gb left the library, so it is the only change.
+  // Quarth.gb (the app's copy now) left the library, so it is the only change.
   assert.deepEqual(plan.copy, []);
-  assert.deepEqual(plan.remove.map((r) => r.file), ['Quarth (GB).gb']);
+  assert.deepEqual(plan.remove.map((r) => r.file), ['Quarth.gb']);
   await runSync({ library: LIB, card: CARD, signature: plan.signature });
   assert.ok(fs.existsSync(path.join(ROMDIR, 'Tetris.gb')));
   assertCardSafe();
 });
 
-test('with no library folder, the card is the library and sync copies nothing', async () => {
+test('with no library folder, the card is the library and sync copies and removes nothing', async () => {
   const { plan } = await makePlan({ library: null, card: CARD });
   assert.equal(plan.source.kind, 'card');
   assert.equal(plan.copy.length, 0);
   assert.equal(plan.remove.length, 0);
+  assert.equal(plan.adopt.length, 0);
+  assert.equal(plan.menuGames, plan.cardOnly.length);
   assert.ok(plan.pack.count > 0);
 });
 

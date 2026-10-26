@@ -13,6 +13,12 @@ export interface Choice {
   art?: ArtRef;
   /** Starred. Favorites come first on the Pocket, after recently played games. */
   favorite?: boolean;
+  /**
+   * When a ROM you put on the card by hand has this game's file name but is a
+   * different dump, sync keeps the card's copy. True replaces it with the
+   * library's copy instead (the card copy is backed up to the Mac first).
+   */
+  useLibraryCopy?: boolean;
   /** From the 31 slot version. Kept in the file but no longer used. */
   include?: boolean;
   updatedAt?: string;
@@ -57,6 +63,7 @@ export interface ChoicePatch {
   art?: ArtRef | null;
   include?: boolean | null;
   favorite?: boolean | null;
+  useLibraryCopy?: boolean | null;
 }
 
 export function updateChoices(patches: Record<string, ChoicePatch>): void {
@@ -76,6 +83,8 @@ export function updateChoices(patches: Record<string, ChoicePatch>): void {
     // Only a star is stored; false clears it.
     if (patch.favorite === null || patch.favorite === false) delete c.favorite;
     else if (patch.favorite === true) c.favorite = true;
+    if (patch.useLibraryCopy === null || patch.useLibraryCopy === false) delete c.useLibraryCopy;
+    else if (patch.useLibraryCopy === true) c.useLibraryCopy = true;
     c.updatedAt = new Date().toISOString();
     const keys = Object.keys(c).filter((k) => k !== 'updatedAt');
     if (keys.length) f.games[crc] = c;

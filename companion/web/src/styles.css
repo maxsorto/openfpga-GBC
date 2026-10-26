@@ -1980,3 +1980,21 @@ code {
 [data-theme='gbc'][data-shell='atomic'] .views {
   background: rgba(62, 51, 97, 0.9);
 }
+
+/* Card only games and kept card copies */
+.chip.card-only {
+  color: var(--chip-picked-ink);
+  border-color: var(--chip-picked-edge);
+  background: var(--chip-picked-bg);
+}
+button.link.small {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.save-rom {
+  max-width: 55%;
+  font-size: 12px;
+}
+.save-rom::before {
+  content: '\2192\00a0';
+}

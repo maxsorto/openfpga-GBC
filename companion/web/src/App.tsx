@@ -172,7 +172,13 @@ export function App() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  const games = lib?.games ?? [];
+  const all = lib?.games ?? [];
+  // Library: what is in the folder. Pocket: what the card will hold, including ROMs only on the card.
+  // With no library folder the card's ROMs are the library.
+  const cardIsLibrary = lib?.source.kind === 'card';
+  const libraryGames = useMemo(() => (cardIsLibrary ? all : all.filter((g) => g.origin === 'library')), [all, cardIsLibrary]);
+  const pocketGames = useMemo(() => all.filter((g) => g.cardState !== 'cardKept'), [all]);
+  const games = view === 'library' ? libraryGames : pocketGames;
   const maxGames = lib?.maxGames ?? 31;
   const vol = volumes.find((v) => v.mountPath === activeCard?.replace(/\/$/, ''));
 
@@ -184,6 +190,7 @@ export function App() {
 
   // Pocket order: played (most recent first), then favorites A to Z, then the rest A to Z.
   const pocket = useMemo(() => {
+    const games = pocketGames;
     const played = games.filter((g) => g.lastPlayed != null).sort((a, b) => b.lastPlayed! - a.lastPlayed!);
     const favs = games.filter((g) => g.lastPlayed == null && g.favorite);
     const rest = games.filter((g) => g.lastPlayed == null && !g.favorite);
@@ -191,7 +198,7 @@ export function App() {
     let n = 0;
     for (const g of [...played, ...favs, ...rest]) if (!g.problems.length) position.set(g.crc, ++n);
     return { played, favs, rest, position };
-  }, [games]);
+  }, [pocketGames]);
 
   const unfiltered = filter === 'all' && !query.trim();
 
@@ -268,7 +275,7 @@ export function App() {
   const dbMissing = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'missing');
   const dbStale = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'stale');
   const romBytes = games.reduce((n, g) => n + g.size, 0);
-  const packBytes = packBytesV6(Math.min(maxGames, games.length - problems.length));
+  const packBytes = packBytesV6(Math.min(maxGames, pocketGames.filter((g) => !g.problems.length).length));
   const freeBytes = lib?.card?.freeBytes ?? vol?.freeBytes ?? null;
 
   const onFavorite = useCallback(async (g: Game, on: boolean) => {
@@ -328,17 +335,17 @@ export function App() {
           ).map(([key, label, hint]) => (
             <button key={key} role="tab" aria-selected={view === key} className={view === key ? 'on' : ''} title={hint} onClick={() => setView(key)}>
               {label}
-              {lib && <span className="count">{games.length}</span>}
+              {lib && <span className="count">{key === 'library' ? libraryGames.length : pocketGames.length}</span>}
             </button>
           ))}
         </nav>
         <div className="grow" />
         <ThemeControl />
-        <LibraryMenu libraryRoot={libraryRoot} games={lib ? games.length : null} hasCard={!!activeCard} onPick={chooseLibrary} />
+        <LibraryMenu libraryRoot={libraryRoot} games={lib ? libraryGames.length : null} hasCard={!!activeCard} onPick={chooseLibrary} />
         <SourceMenu root={card} volumes={volumes} freeBytes={freeBytes} onPick={chooseCard} />
         <button
           className="a-button"
-          disabled={!lib || !activeCard || games.length === 0}
+          disabled={!lib || !activeCard || all.length === 0}
           onClick={() => setSyncing(true)}
           aria-label="Sync to Pocket"
           title={activeCard ? 'Sync to Pocket' : 'Insert the Pocket card to sync'}
@@ -493,7 +500,7 @@ export function App() {
               </div>
             )}
 
-            {lib && games.length === 0 && (
+            {lib && games.length === 0 && view === 'library' && (
               <div className="empty inline">
                 <h2>No ROMs here yet</h2>
                 <p>
@@ -513,9 +520,9 @@ export function App() {
           <footer className="statusbar">
             <span title={lib?.source.root}>
               {lib
-                ? `${games.length} ${games.length === 1 ? 'game' : 'games'} from ${lib.source.files} ${lib.source.files === 1 ? 'file' : 'files'}${
+                ? `${libraryGames.length} ${libraryGames.length === 1 ? 'game' : 'games'} from ${lib.source.files} ${lib.source.files === 1 ? 'file' : 'files'}${
                     lib.source.duplicates ? `, ${lib.source.duplicates} duplicate${lib.source.duplicates === 1 ? '' : 's'} merged` : ''
-                  }`
+                  }${all.length > libraryGames.length ? `, ${all.length - libraryGames.length} only on the card` : ''}`
                 : ''}
             </span>
             {lib?.card && (

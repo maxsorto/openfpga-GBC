@@ -27,7 +27,7 @@ export type SyncPhase = 'check' | 'copy' | 'remove' | 'art' | 'pack' | 'write' |
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }
   | { type: 'progress'; done: number; total: number }
-  | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept'; bytesDone: number; bytesTotal: number }
+  | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept' | 'adopted'; bytesDone: number; bytesTotal: number }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
   | { type: 'done'; target: string; bytes: number; count: number; copied: number; removed: number; unchanged: number; backup: string | null }
   | { type: 'error'; message: string };
@@ -165,6 +165,20 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
     if (!fs.existsSync(path.join(romDir, e.file)) && !plan.copy.some((c) => c.file.toLowerCase() === key)) placed.delete(key);
   }
 
+  // Adopt ROMs you put on the card by hand that are library games: same CRC, name kept.
+  if (plan.adopt.length) {
+    plan.adopt.forEach((a, i) => {
+      if (!isSafeRomFile(a.file)) throw new Error(`Refusing to adopt ${a.file}`);
+      const abs = path.join(romDir, a.file);
+      const st = fs.statSync(abs);
+      if (fileCrc(abs, st) !== a.crc) throw new Error(`${a.file} on the card changed since the plan. Nothing else was written. Plan again.`);
+      placed.set(a.file.toLowerCase(), { crc: a.crc, file: a.file, size: st.size });
+      emit({ type: 'file', index: i + 1, total: plan.adopt.length, file: a.file, size: st.size, state: 'adopted', bytesDone: 0, bytesTotal: 0 });
+    });
+    flush(true);
+    emit({ type: 'log', level: 'info', message: `Adopted ${plan.adopt.length} ROMs already on the card. They keep their names, so their saves still match.` });
+  }
+
   if (plan.space.removeFirst) {
     emit({ type: 'log', level: 'info', message: 'Removing first to make room.' });
     doRemove();
@@ -179,6 +193,16 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       if (!isSafeRomFile(c.file)) throw new Error(`Refusing to write ${c.file}`);
       const to = path.join(romDir, c.file);
       emit({ type: 'file', index: i + 1, total: plan.copy.length, file: c.file, size: c.size, state: 'copying', bytesDone, bytesTotal });
+      if (c.reason === 'replace') {
+        // You chose the library's copy over one you put there by hand. Keep the card's copy on the Mac first.
+        const st = fs.statSync(to);
+        if (fileCrc(to, st) !== c.replacesCrc) throw new Error(`${c.file} on the card changed since the plan. Plan again.`);
+        const dir = path.join(BACKUP_DIR, 'replaced-roms');
+        fs.mkdirSync(dir, { recursive: true });
+        const keep = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')} ${c.file}`);
+        fs.copyFileSync(to, keep);
+        emit({ type: 'log', level: 'info', message: `Saved the card's copy of ${c.file} on this Mac: ${keep}` });
+      }
       copyRom(c.from, to, c.crc);
       rememberCrc(to, c.crc);
       placed.set(c.file.toLowerCase(), { crc: c.crc, file: c.file, size: c.size });

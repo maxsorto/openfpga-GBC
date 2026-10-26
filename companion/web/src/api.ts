@@ -8,10 +8,17 @@ export type ArtRef =
 export type MatchStatus = 'exact' | 'guessed' | 'none';
 export type GameStatus = MatchStatus | 'chosen' | 'custom';
 
+/** See CardState in server/src/library.ts. */
+export type CardState = 'placed' | 'adopt' | 'new' | 'cardKept' | 'replace' | 'cardOnly' | 'none';
+
 export interface Game {
   /** The CRC32: a game is its checksum. */
   id: string;
   crc: string;
+  origin: 'library' | 'card';
+  cardState: CardState;
+  /** For cardKept and replace: the card's own file with this game's name. */
+  cardFile: string | null;
   /** File name on the card. */
   file: string;
   platform: string;
@@ -84,6 +91,7 @@ export interface ChoicePatch {
   title?: string | null;
   art?: ArtRef | null;
   favorite?: boolean | null;
+  useLibraryCopy?: boolean | null;
 }
 
 export interface Settings {
@@ -102,11 +110,14 @@ export interface SyncPlan {
   romFolder: string;
   source: Library['source'];
   manifest: { exists: boolean; placed: number; error?: string; ignored: number };
-  copy: { crc: string; file: string; size: number; title: string; reason: 'new' | 'changed' | 'missing'; from: string }[];
+  copy: { crc: string; file: string; size: number; title: string; reason: 'new' | 'changed' | 'missing' | 'replace'; from: string; replacesCrc?: string }[];
   remove: { crc: string; file: string; size: number }[];
+  adopt: { crc: string; file: string; size: number; title: string }[];
+  keptCard: { crc: string; title: string; libraryFile: string; cardFile: string; cardCrc: string | null }[];
   unchanged: number;
-  shared: string[];
+  saves: { file: string; rom: string | null; state: 'ok' | 'loses' | 'orphan' }[];
   cardOnly: string[];
+  menuGames: number;
   stale: number;
   copyBytes: number;
   removeBytes: number;
@@ -165,7 +176,7 @@ export type SyncPhase = 'check' | 'copy' | 'remove' | 'art' | 'pack' | 'write' |
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }
   | { type: 'progress'; done: number; total: number }
-  | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept'; bytesDone: number; bytesTotal: number }
+  | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept' | 'adopted'; bytesDone: number; bytesTotal: number }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
   | { type: 'done'; target: string; bytes: number; count: number; copied: number; removed: number; unchanged: number; backup: string | null }
   | { type: 'error'; message: string };

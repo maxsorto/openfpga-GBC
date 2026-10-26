@@ -10,17 +10,34 @@ import { loadDats, type DatIndex } from './dat.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
 import { autoMatchCached, cleanTitle, type MatchStatus } from './match.js';
 import { CURRENT_PACK_VERSION, MAX_GAMES, TITLE_MAX, asciiTitle, compareTitles, pathProblems, readPackSummary, type PlayHistory } from './pack.js';
-import { codepointCompare, fileCrc, isRomName, scanLibrary, scanRoms, type LibraryFile } from './roms.js';
+import { codepointCompare, fileCrc, flushCrcCache, isRomName, scanLibrary, scanRoms, type LibraryFile } from './roms.js';
 import { loadThumbs, REPOS, type ThumbIndex } from './thumbs.js';
 import { folderSpace } from './volumes.js';
 
 /** exact: CRC found in No-Intro and art found by that name. guessed: art found by a similar name. */
 export type GameStatus = MatchStatus | 'chosen' | 'custom';
 
+/**
+ * Where a game stands on the card.
+ *   placed     the app put it there (it is in the manifest)
+ *   adopt      a ROM you copied by hand is this same game; sync adds it to the manifest under its current name
+ *   new        not on the card yet; sync copies it
+ *   cardKept   a ROM you copied by hand has this game's file name but is a different dump; the card's copy stays
+ *   replace    as cardKept, but you chose the library's copy; sync replaces the card's copy
+ *   cardOnly   on the card, not in the library; stays in the menu and is never removed
+ *   none       no card chosen
+ */
+export type CardState = 'placed' | 'adopt' | 'new' | 'cardKept' | 'replace' | 'cardOnly' | 'none';
+
 export interface Game {
   /** The CRC32. A game is its checksum. */
   id: string;
   crc: string;
+  /** Where the game comes from: the library folder, or only the card. */
+  origin: 'library' | 'card';
+  cardState: CardState;
+  /** For cardKept and replace: the card's own file with this game's name. */
+  cardFile: string | null;
   /** File name the ROM has (or will have) on the card. */
   file: string;
   platform: string;
@@ -141,58 +158,120 @@ interface Grouped {
   files: LibraryFile[];
 }
 
+export interface Placement {
+  state: Exclude<CardState, 'cardOnly' | 'none'>;
+  /** Name on the card. For cardKept, the card's own file, which this game does not use. */
+  file: string;
+}
+
+export interface HandFile {
+  file: string;
+  crc: string;
+}
+
+export interface Placements {
+  byCrc: Map<string, Placement>;
+  /** ROMs on the card the app did not place and does not adopt or replace, by CRC. */
+  cardOnly: Map<string, HandFile[]>;
+  /** Every ROM on the card the app did not place, with its CRC. */
+  hand: HandFile[];
+}
+
 /**
- * Pick the file name each game gets on the card.
+ * Decide where each library game goes on the card. In order:
  *
  * 1. A game the app placed before keeps the name in the manifest. Renaming or
  *    moving it in the library changes nothing on the card, and its save stays.
- * 2. Others use their library file name. Names must differ by more than case
- *    (exFAT ignores case), and so must the part before the extension, because
- *    that names the save. A clash gets " (GB)" or " (GBC)", then the CRC.
- * 3. Files you put on the card by hand are never overwritten. A clash with one
- *    gets a new name, unless it is the very same ROM.
+ * 2. A ROM you copied to the card by hand with the same CRC is adopted under its
+ *    current name, never renamed, so its save keeps working.
+ * 3. A ROM you copied by hand with the same name (before the extension) but a
+ *    different CRC wins: the card's copy stays and the library's is not placed,
+ *    because the save is tied to that name. You can choose the library's copy
+ *    per game; it then replaces the card's copy under the card's name.
+ * 4. Everything else uses its library file name. Names must differ by more than
+ *    case (exFAT ignores case), and so must the part before the extension,
+ *    because that names the save. A clash gets " (GB)" or " (GBC)", then the CRC.
  */
-export function assignCardNames(
+export function placeOnCard(
   games: Grouped[],
   manifest: ManifestEntry[],
   cardFiles: Map<string, string>,
   cardCrc: (file: string) => string | null,
-): Map<string, string> {
-  const names = new Map<string, string>();
+  useLibraryCopy: (crc: string) => boolean,
+): Placements {
+  const byCrc = new Map<string, Placement>();
   const stems = new Map<string, string>(); // lower stem -> crc that holds it
   const placedNames = new Set(manifest.map((e) => e.file.toLowerCase()));
-  // Stems of files on the card that the app did not place.
-  const handStems = new Map<string, string>();
-  for (const [lower, actual] of cardFiles) if (!placedNames.has(lower)) handStems.set(stem(lower), actual);
+  const hand: HandFile[] = [];
+  for (const [lower, actual] of [...cardFiles].sort((a, b) => codepointCompare(a[1], b[1]))) {
+    if (placedNames.has(lower)) continue;
+    const crc = cardCrc(actual);
+    if (crc) hand.push({ file: actual, crc });
+  }
+  const used = new Set<string>(); // hand files that a library game takes over
+  const handByCrc = new Map<string, HandFile>();
+  for (const h of hand) if (!handByCrc.has(h.crc)) handByCrc.set(h.crc, h);
+  const handByStem = new Map<string, HandFile>();
+  for (const h of hand) if (!handByStem.has(stem(h.file).toLowerCase())) handByStem.set(stem(h.file).toLowerCase(), h);
 
-  const byCrc = new Map(manifest.map((e) => [e.crc, e]));
+  // 1. Placed before.
+  const manifestByCrc = new Map(manifest.map((e) => [e.crc, e]));
   for (const g of games) {
-    const e = byCrc.get(g.crc);
+    const e = manifestByCrc.get(g.crc);
     if (!e) continue;
     const s = stem(e.file).toLowerCase();
-    if (stems.has(s) || handStems.has(s)) continue;
+    if (stems.has(s)) continue;
     stems.set(s, g.crc);
-    names.set(g.crc, e.file);
+    byCrc.set(g.crc, { state: 'placed', file: e.file });
   }
-
-  const free = (file: string, crc: string): boolean => {
-    const s = stem(file).toLowerCase();
-    if (stems.has(s)) return false;
-    const hand = handStems.get(s);
-    if (hand === undefined) return true;
-    // The same ROM is already there under this exact name: share it.
-    return hand.toLowerCase() === file.toLowerCase() && cardCrc(hand) === crc;
-  };
+  // 2. Adopt the same ROM copied by hand.
   for (const g of games) {
-    if (names.has(g.crc)) continue;
+    if (byCrc.has(g.crc)) continue;
+    const h = handByCrc.get(g.crc);
+    if (!h) continue;
+    const s = stem(h.file).toLowerCase();
+    if (stems.has(s)) continue;
+    stems.set(s, g.crc);
+    used.add(h.file);
+    byCrc.set(g.crc, { state: 'adopt', file: h.file });
+  }
+  // 3. A different ROM copied by hand under this game's name.
+  for (const g of games) {
+    if (byCrc.has(g.crc)) continue;
+    const s = stem(path.posix.basename(g.files[0].rel)).toLowerCase();
+    const h = handByStem.get(s);
+    if (!h || used.has(h.file) || stems.has(s)) continue;
+    if (useLibraryCopy(g.crc)) {
+      stems.set(s, g.crc);
+      used.add(h.file);
+      byCrc.set(g.crc, { state: 'replace', file: h.file });
+    } else {
+      byCrc.set(g.crc, { state: 'cardKept', file: h.file });
+    }
+  }
+  // 4. New. Stems of hand files that stay on the card are taken too.
+  for (const h of hand) if (!used.has(h.file)) stems.set(stem(h.file).toLowerCase(), stems.get(stem(h.file).toLowerCase()) ?? `hand:${h.crc}`);
+  for (const g of games) {
+    if (byCrc.has(g.crc)) continue;
     const base = path.posix.basename(g.files[0].rel);
     const ext = extOf(base);
     const tries = [base, `${stem(base)} (${ext.slice(1).toUpperCase()})${ext}`, `${stem(base)} (${g.crc})${ext}`];
-    const pick = tries.find((t) => free(t, g.crc)) ?? tries[tries.length - 1];
+    const pick = tries.find((t) => !stems.has(stem(t).toLowerCase())) ?? tries[tries.length - 1];
     stems.set(stem(pick).toLowerCase(), g.crc);
-    names.set(g.crc, pick);
+    byCrc.set(g.crc, { state: 'new', file: pick });
   }
-  return names;
+
+  const libraryCrcs = new Set(games.map((g) => g.crc));
+  const cardOnly = new Map<string, HandFile[]>();
+  for (const h of hand) {
+    if (used.has(h.file)) continue;
+    // A second copy of a library game under another name. It stays on the card, but it is not another game.
+    if (libraryCrcs.has(h.crc)) continue;
+    const list = cardOnly.get(h.crc);
+    if (list) list.push(h);
+    else cardOnly.set(h.crc, [h]);
+  }
+  return { byCrc, cardOnly, hand };
 }
 
 export interface LibraryOptions {
@@ -237,7 +316,7 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
 
   const manifest = card ? readManifest(card) : null;
   const cardFiles = card ? listCardRoms(card) : new Map<string, string>();
-  const names = assignCardNames([...groups.values()], manifest?.manifest.placed ?? [], cardFiles, (f) => {
+  const crcOnCard = (f: string): string | null => {
     if (!card) return null;
     try {
       const abs = path.join(cardRomDir(card), f);
@@ -245,22 +324,32 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     } catch {
       return null;
     }
-  });
+  };
+  const choices = loadChoices().games;
+  // With no library folder, every ROM on the card is a card only game.
+  const libraryGroups = source.kind === 'folder' ? [...groups.values()] : [];
+  // Without a card this still picks unique names, so saves never mix.
+  const placements = placeOnCard(
+    libraryGroups,
+    source.kind === 'folder' ? (manifest?.manifest.placed ?? []) : [],
+    cardFiles,
+    crcOnCard,
+    (crc) => choices[crc]?.useLibraryCopy === true,
+  );
+  flushCrcCache();
 
   const [dats, thumbs] = await Promise.all([loadDats(), loadThumbs()]);
-  const choices = loadChoices().games;
   const played = playHistory(card);
 
-  const games: Game[] = [...groups.values()].map(({ crc, files: fs_ }) => {
-    const primary = fs_[0];
-    const libName = path.posix.basename(primary.rel);
-    const file = names.get(crc) ?? libName;
+  const makeGame = (crc: string, origin: Game['origin'], name: string, file: string, size: number, paths: string[], sourcePath: string): Game => {
+    const placement = placements.byCrc.get(crc);
+    const cardState: CardState = origin === 'card' ? 'cardOnly' : !card ? 'none' : (placement?.state ?? 'none');
     const dat = dats.byCrc.get(crc);
     const system = file.toLowerCase().endsWith('.gb') ? 'gb' : 'gbc';
-    const auto = autoMatchCached(thumbs, stem(libName), system, dat);
+    const auto = autoMatchCached(thumbs, stem(name), system, dat);
     const autoArt: ArtRef | null = auto.thumb ? { kind: 'thumb', repo: auto.thumb.repo, name: auto.thumb.name } : null;
     const choice = choices[crc] ?? {};
-    const defaultTitle = cleanTitle(dat?.name ?? stem(libName));
+    const defaultTitle = cleanTitle(dat?.name ?? stem(name));
     const title = choice.title ?? defaultTitle;
     const art = choice.art ?? autoArt;
     let status: GameStatus = auto.status;
@@ -268,13 +357,16 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     return {
       id: crc,
       crc,
+      origin,
+      cardState,
+      cardFile: cardState === 'cardKept' || cardState === 'replace' ? placement!.file : null,
       file,
       platform: PACK_PLATFORM,
-      size: primary.size,
+      size,
       isGb: system === 'gb',
-      paths: fs_.map((f) => f.rel),
-      sourcePath: primary.absPath,
-      renamed: file !== libName,
+      paths,
+      sourcePath,
+      renamed: file !== name,
       datName: dat?.name ?? null,
       defaultTitle,
       title,
@@ -288,7 +380,28 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
       lastPlayed: played.get(crc) ?? null,
       problems: pathProblems(PACK_PLATFORM, file),
     };
+  };
+
+  const games: Game[] = libraryGroups.map(({ crc, files: fs_ }) => {
+    const primary = fs_[0];
+    const libName = path.posix.basename(primary.rel);
+    const p = placements.byCrc.get(crc);
+    // A game whose card copy is kept is shown under its library name; it is not placed.
+    const file = p && p.state !== 'cardKept' ? p.file : libName;
+    return makeGame(crc, 'library', libName, file, primary.size, fs_.map((f) => f.rel), primary.absPath);
   });
+  if (card) {
+    for (const [crc, hs] of placements.cardOnly) {
+      const abs = path.join(cardRomDir(card), hs[0].file);
+      let size = 0;
+      try {
+        size = fs.statSync(abs).size;
+      } catch {
+        continue;
+      }
+      games.push(makeGame(crc, 'card', hs[0].file, hs[0].file, size, [], abs));
+    }
+  }
   games.sort(compareTitles);
 
   let cardInfo: CardInfo | null = null;

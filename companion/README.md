@@ -44,11 +44,11 @@ There is no Python dependency.
 
 | Path | What happens |
 | --- | --- |
-| `Assets/gbc/common/*.gb`, `*.gbc` | Copied from the library. Removed only if `cover-picker.json` lists them and the file is still the ROM the app put there. |
+| `Assets/gbc/common/*.gb`, `*.gbc` | Copied from the library, or adopted if already there. Removed only if `cover-picker.json` lists them and the file is still the ROM the app put there. |
 | `Assets/gbc/common/covers.bin` | Written. The old one is copied to the Mac first. |
 | `Assets/gbc/common/cover-picker.json` | Written. The list of ROMs the app placed. |
 | `Saves/` (`.sav`, `.sus`, everything else) | Never touched. |
-| ROMs you copied by hand | Never touched. The plan lists them as "On the card, not from this app". |
+| ROMs you copied by hand | Adopted when they are the same ROM as a library game. Otherwise never touched, unless you choose "Use the library's" for one. The plan lists them as "On the card, not from this app". |
 
 The manifest looks like this:
 
@@ -58,17 +58,40 @@ The manifest looks like this:
 
 Game Boy games go in the GBC folder too, because this core is the one that plays them.
 
-### File names on the card
+### ROMs already on the card
 
-A ROM keeps its library file name on the card, with a few rules so saves never mix:
+Sync compares the library with what is on the card, game by game:
 
-- Once placed, a game keeps its card name. Renaming or moving it in the library changes
-  nothing on the card, so its save keeps working.
-- Two games can not share a name before the extension, because that names the save.
-  `Wario Land II.gb` and `Wario Land II.gbc` become `Wario Land II.gb` and
-  `Wario Land II (GBC).gbc`. Case does not count, as on exFAT.
-- A ROM you put on the card by hand is never overwritten. If the library has a
-  different ROM with that name, the app gives its copy another name.
+- **Placed before.** A game the app placed keeps its card name. Renaming or moving it in
+  the library changes nothing on the card, so its save keeps working.
+- **Adopted.** A ROM you copied to the card by hand with the same CRC as a library game is
+  adopted: it joins the manifest under its current name and is never renamed. The
+  library's copy is not placed. For example, `Pokemon - Yellow Version.gbc` on the card
+  and `GB/Pokemon - Yellow Version.gb` in the library are the same ROM, so the card keeps
+  `.gbc` and `Pokemon - Yellow Version.sav` still matches. From then on the app treats it
+  like any ROM it placed.
+- **Kept the card's version.** A ROM you copied by hand with the same name (before the
+  extension) as a library game, but a different CRC, stays as it is, because its save is
+  tied to that name. The library's copy is not placed, so the Pocket does not show two
+  entries. The plan lists these, and each one has "Use the library's": sync then replaces
+  the card's copy under the same name, after saving it to the Mac
+  (`covers-backups/replaced-roms/`).
+- **Card only.** ROMs on the card that are not in the library, such as ROM hacks, stay in
+  the Pocket view and the menu order like any game (after favorites, A to Z, unless
+  starred). Sync never removes them.
+- **New.** Everything else is copied under its library file name. Two games can not share
+  a name before the extension, because that names the save: `Wario Land II.gb` and
+  `Wario Land II.gbc` become `Wario Land II.gb` and `Wario Land II (GBC).gbc`. Case does
+  not count, as on exFAT.
+
+### Saves
+
+The plan lists every `.sav` in `Saves/gbc/common` and the ROM it belongs to after sync
+(same name before the extension). It warns when a save would lose its ROM, for example
+when a game leaves the library. Saves are only read, never moved, renamed or removed. A
+save without a ROM works again if the game comes back under the same name.
+
+If the library folder has no ROMs at all, sync stops before it removes anything.
 
 ### Today's core and 31 games
 
@@ -80,7 +103,7 @@ writer will sit next to the v6 one in `server/src/pack.ts`.
 ### No library folder
 
 Without a library folder, the app uses the ROMs already on the card, as before. Sync
-then copies nothing and only writes `covers.bin` and the manifest.
+then copies, adopts and removes nothing, and only writes `covers.bin` and the manifest.
 
 ## Prerequisites
 
@@ -159,10 +182,15 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   compared with Pillow step by step.
 - `sync.test.ts`: a fake library of 40 ROMs (random bytes, a few duplicates, an
   AppleDouble file, a hidden folder) and a fake card with saves and a ROM copied by
-  hand. It runs a full sync, then removes, adds and changes ROMs and syncs again. It
+  hand. It runs a full sync, then removes, adds and changes ROMs and syncs again, and
+  tries "Use the library's" on a ROM copied by hand. It
   checks that only manifest files are removed, saves and the hand placed ROM stay
   byte for byte, unchanged ROMs are not rewritten, a short card writes nothing, and a
   stale plan is refused. It runs offline.
+- `adopt.test.ts`: a card that already has ROMs, like a real one: the same Pokemon Yellow
+  under `.gbc` is adopted and keeps its name, a different Pokemon Silver dump on the card
+  is kept, a ROM hack only on the card stays in the menu, saves are matched to ROMs (and
+  flagged when a game leaves), and an empty library folder removes nothing.
 - `order.test.ts`: played, then favorites, then the rest, as the Pocket shows them.
 
 The tests use the venv at `cover-picker/.venv` (Pillow 11.3). Set
