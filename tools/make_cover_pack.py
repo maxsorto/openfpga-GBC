@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Build covers.bin (format v4) for the GBC cover-picker core.
+"""Build covers.bin (format v6) for the GBC cover-picker core.
 
 Layout (little-endian):
-  0      header  16 B : "GBCV" | ver u16 = 4 | count u16 | 64 u16 | 40 u16 | 4 pad
-  16     thumb palette 512 B : 256 x RGB565, shared by every 40x40 preview
+  0      header  16 B : "GBCV" | ver u16 = 6 | count u16 | 128 u16 | 80 u16 | 4 pad
+  16     reserved 512 B
   528    entries count x 128 B : title char[40] | flags u8 (bit0 = original Game Boy) | pad[3] | size u32 | path char[80]
-  then   blobs, then path structs count x 3 x 256 B (v5): ROM path, .sav path, .sus (suspend) path, NUL padded,
+  528 + count*128  blobs, count x 45568 B : center 128x128 RGB565 | preview 80x80 RGB565 (row-major)
+  then   path structs count x 3 x 256 B: ROM path, .sav path, .sus (suspend) path, NUL padded,
          read straight into the core's 0x0192 parameter struct
-  528 + count*128  blobs, count x 6208 B : palette 512 B (RGB565) | center 64x64 8-bit indices | preview 40x40 8-bit indices
 Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
 Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
@@ -15,7 +15,7 @@ Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
 import argparse, os, struct, sys
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
 
-CEN, TH, MAXN = 64, 40, 31
+CEN, TH, MAXN = 128, 80, 31
 
 def rgb565(rgb): r, g, b = rgb; return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
 
@@ -55,22 +55,15 @@ def main():
             paths.append(q.encode().ljust(256, b"\0"))
         entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(os.path.join(a.roms, rom)), path.encode()[:79]))
         print(f"{'cover ' if src else 'placeholder'}  {rom}")
-    # shared preview palette: quantize a mosaic of every preview together
-    thumbs = [fit(im, TH) for im in arts]
-    mosaic = Image.new("RGB", (TH * len(thumbs), TH))
-    for i, t in enumerate(thumbs): mosaic.paste(t, (i * TH, 0))
-    tpal_img = mosaic.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
-    tpal = (tpal_img.getpalette() or [])[:768]; tpal += [0] * (768 - len(tpal))
+    # v6: full-color RGB565 art, center CEN x CEN then preview TH x TH, row-major, little-endian words
     blobs = []
-    for im, th in zip(arts, thumbs):
-        c = fit(im, CEN).quantize(colors=256, method=Image.Quantize.MEDIANCUT)
-        cp = (c.getpalette() or [])[:768]; cp += [0] * (768 - len(cp))
-        pal = b"".join(struct.pack("<H", rgb565(cp[i:i+3])) for i in range(0, 768, 3))
-        tq = th.quantize(palette=tpal_img, dither=Image.Dither.FLOYDSTEINBERG)
-        blobs.append(pal + bytes(c.getdata()) + bytes(tq.getdata()))
+    for im in arts:
+        c = fit(im, CEN); t = fit(im, TH)
+        blobs.append(b"".join(struct.pack("<H", rgb565(p)) for p in c.getdata()) +
+                     b"".join(struct.pack("<H", rgb565(p)) for p in t.getdata()))
     with open(a.out, "wb") as f:
-        f.write(struct.pack("<4sHHHH4x", b"GBCV", 5, len(roms), CEN, TH))
-        f.write(b"".join(struct.pack("<H", rgb565(tpal[i:i+3])) for i in range(0, 768, 3)))
+        f.write(struct.pack("<4sHHHH4x", b"GBCV", 6, len(roms), CEN, TH))
+        f.write(bytes(512))
         f.write(b"".join(entries)); f.write(b"".join(blobs)); f.write(b"".join(paths))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 

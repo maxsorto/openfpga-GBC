@@ -340,6 +340,11 @@ wire    [31:0]  target_dataslot_bridgeaddr;
 wire    [31:0]  target_dataslot_length;
 
 wire            picker_hold_gb;             // cover picker: Game Boy held in reset
+// cover picker hi-res menu: SDRAM read port (clk_sys), art loading, video
+wire            picker_sd_own, picker_sd_oe, picker_art_load;
+wire    [23:0]  picker_sd_addr;
+wire            picker_hr_mode, picker_hr_de, picker_hr_hs, picker_hr_vs;
+wire    [23:0]  picker_hr_rgb;
 wire    [31:0]  target_buffer_param_struct = 32'hF3000000; // cover picker's 0x0192 filename struct (bridge-readable)
 wire    [31:0]  target_buffer_resp_struct  = 32'h0;
     
@@ -734,12 +739,26 @@ wire [5:0] cart_phi_high_m1 = speed ? 6'd11 : 6'd23;
 wire cart_phi_fall = cart_physical_mode && (cart_phi_counter == cart_phi_high_m1);
 wire cart_phi_rise = cart_physical_mode && (cart_phi_counter == cart_phi_period_m1);
 
-wire  [1:0] sdram_ds     =  cart_download ? 2'b11 : {mbc_addr[0], ~mbc_addr[0]};
+// cover art: streamed through the cart loader (bridge 0x108xxxxx) into SDRAM words 0x400000+, above any ROM, with
+// its own write strobe so the cart logic never sees it; read back by the menu while the Game Boy is held in reset
+reg  [2:0] art_load_s = 0;
+reg        art_wait = 0, art_write = 0;
+always_ff @(posedge clk_sys) begin
+  art_load_s <= {art_load_s[1:0], picker_art_load};
+  if (ioctl_wr & art_load_s[2]) art_wait <= 1;
+  if (ce_cpu2x) begin
+    art_write <= art_wait;
+    if (art_write) {art_wait, art_write} <= 0;
+  end
+end
+wire        art_dl       =  art_load_s[2];
+wire  [1:0] sdram_ds     = (cart_download | art_dl | picker_sd_own) ? 2'b11 : {mbc_addr[0], ~mbc_addr[0]};
 wire [15:0] sdram_do;
-wire [15:0] sdram_di     =  cart_download ? ioctl_dout : 16'd0;
-wire [23:0] sdram_addr   =  cart_download ? ioctl_addr[24:1] : {2'b00, mbc_addr[22:1]};
-wire sdram_oe            = ~cart_download & cart_rd & ~cram_rd;
-wire sdram_we            =  cart_download & dn_write;
+wire [15:0] sdram_di     = (cart_download | art_dl) ? ioctl_dout : 16'd0;
+wire [23:0] sdram_addr   = (cart_download | art_dl) ? ioctl_addr[24:1] :
+                           picker_sd_own ? picker_sd_addr : {2'b00, mbc_addr[22:1]};
+wire sdram_oe            =  picker_sd_own ? picker_sd_oe : (~cart_download & ~art_dl & cart_rd & ~cram_rd);
+wire sdram_we            = (cart_download & dn_write) | (art_dl & art_write);
 wire sdram_refresh_force;
 wire sdram_autorefresh   = !ff_on;
 
@@ -1305,6 +1324,18 @@ cover_picker cover_picker (
   .ovl_dim                    ( picker_dim                 ),
   .snd_open                   ( picker_snd_open            ),
   .snd_close                  ( picker_snd_close           ),
+  .clk_sys                    ( clk_sys                    ),
+  .sd_ce                      ( ce_cpu2x                   ),
+  .sd_own                     ( picker_sd_own              ),
+  .sd_addr                    ( picker_sd_addr             ),
+  .sd_oe                      ( picker_sd_oe               ),
+  .sd_q                       ( sdram_do                   ),
+  .art_load                   ( picker_art_load            ),
+  .hr_mode                    ( picker_hr_mode             ),
+  .hr_de                      ( picker_hr_de               ),
+  .hr_hs                      ( picker_hr_hs               ),
+  .hr_vs                      ( picker_hr_vs               ),
+  .hr_rgb                     ( picker_hr_rgb              ),
   .menu_active                (                            ),
   .hold_gb                    ( picker_hold_gb             ),
   .picker_download            ( picker_download            ),
@@ -1357,6 +1388,14 @@ always_ff @(posedge clk_vid) begin
   hs_prev       <= video_hs_gb;
   vs_prev       <= video_vs_gb;
   de_prev       <= de;
+
+  // cover picker hi-res menu: its own 320x288 timing replaces the Game Boy's (scaler slot 2)
+  if (picker_hr_mode) begin
+    video_de_reg  <= picker_hr_de;
+    video_hs_reg  <= picker_hr_hs;
+    video_vs_reg  <= picker_hr_vs;
+    video_rgb_reg <= picker_hr_de ? picker_hr_rgb : 24'h0;
+  end
 end
 
 assign video_rgb_clock    = clk_vid;
@@ -1370,7 +1409,11 @@ assign lum = (21 * video_rgb_reg[23:16] + 72 * video_rgb_reg[15:8] + 7 * video_r
 
 always_comb begin
   if(~video_de_reg) begin
-    if(sgb_border_en & sgb_en) begin
+    if(picker_hr_mode) begin
+      video_rgb[23:13] = 2;          // scaler slot 2: 320x288 cover menu
+      video_rgb[12:3]  = 0;
+      video_rgb[2:0]   = 0;
+    end else if(sgb_border_en & sgb_en) begin
       video_rgb[23:13] = 1;
       video_rgb[12:3]  = 0;
       video_rgb[2:0]   = 0;
@@ -1380,7 +1423,7 @@ always_comb begin
       video_rgb[2:0]   = 0;
     end
   end else begin
-    if (bw_en) begin
+    if (bw_en & ~picker_hr_mode) begin
       video_rgb = {lum, lum, lum};
     end else begin
       video_rgb = video_rgb_reg;
