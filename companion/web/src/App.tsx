@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ArtStatus, type Game, type Library } from './api';
 import { GameCard } from './GameCard';
-import { IconCard, IconFolder, IconRefresh, IconSearch, IconStar, IconWarn } from './Icons';
+import { IconCard, IconCheck, IconFolder, IconRefresh, IconSearch, IconStar, IconWarn } from './Icons';
 import { LibraryMenu } from './LibraryMenu';
 import { PickerModal } from './PickerModal';
 import { SourceMenu } from './SourceMenu';
@@ -10,9 +10,19 @@ import { ThemeControl } from './ThemeControl';
 import { Board } from './Board';
 import { useVolumes } from './useVolumes';
 import { VirtualGrid, type Block } from './VirtualGrid';
-import { fmtBytes, fmtDate, isVolumePath, packBytes as packSize } from './util';
+import { fmtBytes, fmtDate, isVolumePath, packBytes as packSize, words } from './util';
 
 type View = 'library' | 'pocket';
+
+/** One card in the grid. In the Pocket view a favorite can be in two places. */
+interface Item {
+  game: Game;
+  key: string;
+  /** Place in the Pocket menu, from 1. */
+  pos: number | null;
+  /** This is the game's second place: under its letter, after the favorites at the top. */
+  again: boolean;
+}
 type Filter = 'all' | 'fav' | 'exact' | 'guessed' | 'none' | 'yours';
 
 const FILTERS: { key: Filter; label: string; test: (g: Game) => boolean }[] = [
@@ -190,32 +200,42 @@ export function App() {
     return (g: Game) => f.test(g) && (!q || g.title.toLowerCase().includes(q) || g.file.toLowerCase().includes(q));
   }, [filter, query]);
 
-  // Pocket order: played (most recent first), then favorites A to Z, then the rest A to Z.
+  // Pocket order: played (most recent first), then favorites A to Z, then the A to Z list.
+  // With the streaming core (v7) the A to Z list has every game, so a favorite shows
+  // twice: at the top and under its letter. With v6 each game shows once.
   const pocket = useMemo(() => {
     const games = pocketGames;
     const played = games.filter((g) => g.lastPlayed != null).sort((a, b) => b.lastPlayed! - a.lastPlayed!);
     const favs = games.filter((g) => g.lastPlayed == null && g.favorite);
-    const rest = games.filter((g) => g.lastPlayed == null && !g.favorite);
-    const position = new Map<string, number>();
+    const rest = streaming ? games : games.filter((g) => g.lastPlayed == null && !g.favorite);
     let n = 0;
-    for (const g of [...played, ...favs, ...rest]) if (!g.problems.length) position.set(g.crc, ++n);
-    return { played, favs, rest, position };
-  }, [pocketGames]);
+    const items = (list: Game[], tag: string, again: boolean): Item[] =>
+      list.map((game) => ({
+        game,
+        key: `${tag}:${game.crc}`,
+        pos: game.problems.length ? null : ++n,
+        again: again && (game.favorite || game.lastPlayed != null),
+      }));
+    const p = items(played, 'p', false);
+    const f = items(favs, 'f', false);
+    const r = items(rest, 'a', streaming);
+    return { played: p, favs: f, rest: r, entries: n };
+  }, [pocketGames, streaming]);
 
   const unfiltered = filter === 'all' && !query.trim();
 
-  const blocks = useMemo((): Block<Game>[] => {
-    if (view === 'library') return [{ kind: 'items', key: 'all', items: games.filter(matches) }];
-    const out: Block<Game>[] = [];
+  const blocks = useMemo((): Block<Item>[] => {
+    if (view === 'library') return [{ kind: 'items', key: 'all', items: games.filter(matches).map((game) => ({ game, key: game.crc, pos: null, again: false })) }];
+    const out: Block<Item>[] = [];
     // A run of games, with the "today's core stops here" line where it falls.
-    const run = (key: string, items: Game[]) => {
-      const shown = items.filter(matches);
+    const run = (key: string, items: Item[]) => {
+      const shown = items.filter((it) => matches(it.game));
       if (!unfiltered) {
         if (shown.length) out.push({ kind: 'items', key, items: shown });
         return;
       }
-      const cut = shown.findIndex((g) => (pocket.position.get(g.crc) ?? 0) > maxGames);
-      const firstPos = shown.length ? (pocket.position.get(shown[0].crc) ?? 0) : 0;
+      const cut = shown.findIndex((it) => (it.pos ?? 0) > maxGames);
+      const firstPos = shown.length ? (shown[0].pos ?? 0) : 0;
       if (cut <= 0 || firstPos > maxGames) {
         if (cut === 0 && firstPos === maxGames + 1) out.push(cutoffRow());
         if (shown.length) out.push({ kind: 'items', key, items: shown });
@@ -225,7 +245,7 @@ export function App() {
       out.push(cutoffRow());
       out.push({ kind: 'items', key: `${key}-b`, items: shown.slice(cut) });
     };
-    const cutoffRow = (): Block<Game> => ({
+    const cutoffRow = (): Block<Item> => ({
       kind: 'row',
       key: 'cutoff',
       height: 70,
@@ -274,7 +294,16 @@ export function App() {
       ),
     });
     run('fav', pocket.favs);
-    out.push({ kind: 'row', key: 'h-rest', height: HEAD_H, node: <SectionHead title="Everything else" count={pocket.rest.length} note="A to Z" /> });
+    out.push({
+      kind: 'row',
+      key: 'h-rest',
+      height: HEAD_H,
+      node: streaming ? (
+        <SectionHead title="All games" count={pocket.rest.length} note="A to Z, favorites included. Up and Down on the Pocket jump by letter." />
+      ) : (
+        <SectionHead title="Everything else" count={pocket.rest.length} note="A to Z" />
+      ),
+    });
     run('rest', pocket.rest);
     return out;
   }, [view, games, matches, pocket, unfiltered, maxGames, streaming, packVersion]);
@@ -285,7 +314,7 @@ export function App() {
   const dbMissing = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'missing');
   const dbStale = lib && [...lib.databases.dats, ...lib.databases.thumbs].some((s) => s.state === 'stale');
   const romBytes = games.reduce((n, g) => n + g.size, 0);
-  const packBytes = packSize(packVersion, Math.min(maxGames, pocketGames.filter((g) => !g.problems.length).length));
+  const packBytes = packSize(packVersion, Math.min(maxGames, pocket.entries));
   const freeBytes = lib?.card?.freeBytes ?? vol?.freeBytes ?? null;
 
   const loadRef = useRef(load);
@@ -318,11 +347,18 @@ export function App() {
   const onOpen = useCallback((g: Game) => setPicker(g), []);
 
   const renderItem = useCallback(
-    (g: Game) => {
-      const pos = view === 'pocket' ? (pocket.position.get(g.crc) ?? null) : null;
-      return <GameCard game={g} position={pos} beyondLimit={pos != null && pos > maxGames} onOpen={onOpen} onFavorite={onFavorite} onRename={onRename} />;
-    },
-    [view, pocket, maxGames, onOpen, onFavorite, onRename],
+    (it: Item) => (
+      <GameCard
+        game={it.game}
+        position={view === 'pocket' ? it.pos : null}
+        again={it.again}
+        beyondLimit={it.pos != null && it.pos > maxGames}
+        onOpen={onOpen}
+        onFavorite={onFavorite}
+        onRename={onRename}
+      />
+    ),
+    [view, maxGames, onOpen, onFavorite, onRename],
   );
 
   const nothingChosen = settingsLoaded && !libraryRoot && !card;
@@ -461,6 +497,28 @@ export function App() {
                 <IconWarn /> {error}
               </div>
             )}
+            {lib && lib.migrated.length > 0 && (
+              <div className="banner info">
+                <IconCheck />
+                <span className="grow">
+                  {lib.migrated
+                    .slice(0, 3)
+                    .map((m) => `${m.title}: new dump, kept your ${words(m.kept)}.`)
+                    .join(' ')}
+                  {lib.migrated.length > 3 && ` And ${lib.migrated.length - 3} more.`}
+                </span>
+                <button
+                  className="link"
+                  onClick={async () => {
+                    const ids = lib.migrated.map((m) => m.id);
+                    setLib((l) => (l ? { ...l, migrated: [] } : l));
+                    await api.migrationsSeen(ids).catch(() => null);
+                  }}
+                >
+                  OK
+                </button>
+              </div>
+            )}
             {lib?.source.kind === 'card' && (
               <div className="banner info">
                 <IconFolder /> Showing the ROMs already on the card. Choose a library folder to copy games from your Mac.
@@ -535,7 +593,7 @@ export function App() {
             )}
 
             {lib && games.length > 0 && (
-              <VirtualGrid blocks={blocks} scroller={scroller} itemKey={(g) => g.crc} renderItem={renderItem} rowHeight={ROW_H} />
+              <VirtualGrid blocks={blocks} scroller={scroller} itemKey={(it) => it.key} renderItem={renderItem} rowHeight={ROW_H} />
             )}
             {lib && games.length > 0 && shownCount === 0 && <div className="loading">No games match this filter.</div>}
           </main>

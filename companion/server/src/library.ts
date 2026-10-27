@@ -5,7 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CARD_ROM_REL, COVERS_REL, PACK_PLATFORM } from './config.js';
-import { loadChoices, type ArtRef } from './choices.js';
+import { loadChoices, migrateChoices, type ArtRef } from './choices.js';
+import { trackPaths } from './romPaths.js';
 import { loadDats, type DatIndex } from './dat.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
 import { autoMatchCached, cleanTitle, type MatchStatus } from './match.js';
@@ -100,6 +101,8 @@ export interface Library {
   /** How many games the pack holds: 31 for v6, 2047 for v7. */
   maxGames: number;
   packVersion: number;
+  /** Games whose choices moved to a new dump, not shown yet. */
+  migrated: { id: string; title: string; kept: string[]; reason: 'library' | 'card'; where: string }[];
   /** Which pack the card gets and why. */
   pack: { version: number; limit: number; streaming: boolean; reason: string; coreVersion: string | null };
   databases: {
@@ -288,6 +291,8 @@ export interface LibraryOptions {
   library: string | null;
   /** The card, or a folder laid out like one. */
   card: string | null;
+  /** Favorite states that win over the saved ones, by CRC (from favorites.cfg on the card, before sync saves them). */
+  favoriteOverrides?: Map<string, boolean>;
 }
 
 export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
@@ -334,7 +339,13 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
       return null;
     }
   };
-  const choices = loadChoices().games;
+  // A new dump at the same path keeps the game's choices (rule: same path, new CRC).
+  // A file that moved and changed at once is a different file: nothing moves.
+  const scope = source.kind === 'folder' ? source.root : cardRomDir(card!);
+  for (const ch of trackPaths(scope, files.map((f) => ({ abs: f.absPath, crc: f.crc })))) {
+    if (groups.has(ch.to)) migrateChoices(ch.from, ch.to, source.kind === 'folder' ? 'library' : 'card', path.relative(scope, ch.abs).split(path.sep).join('/'));
+  }
+  let choices = loadChoices().games;
   // With no library folder, every ROM on the card is a card only game.
   const libraryGroups = source.kind === 'folder' ? [...groups.values()] : [];
   // Without a card this still picks unique names, so saves never mix.
@@ -346,6 +357,15 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     (crc) => choices[crc]?.useLibraryCopy === true,
   );
   flushCrcCache();
+  // ROMs you put on the card yourself: a new dump under the same name keeps its choices too.
+  if (card && source.kind === 'folder') {
+    const romDir = cardRomDir(card);
+    let moved = false;
+    for (const ch of trackPaths(romDir, placements.hand.map((h) => ({ abs: path.join(romDir, h.file), crc: h.crc })))) {
+      if (migrateChoices(ch.from, ch.to, 'card', path.basename(ch.abs))) moved = true;
+    }
+    if (moved) choices = loadChoices().games;
+  }
 
   const [dats, thumbs] = await Promise.all([loadDats(), loadThumbs()]);
   const played = playHistory(card);
@@ -372,7 +392,7 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     const choice = {
       title: own.title ?? parent.title,
       art: own.art ?? parent.art,
-      favorite: own.favorite ?? parent.favorite,
+      favorite: opts.favoriteOverrides?.get(crc) ?? own.favorite ?? parent.favorite,
     };
     const defaultTitle = cleanTitle(dat?.name ?? stem(name));
     const title = choice.title ?? defaultTitle;
@@ -449,6 +469,9 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     source,
     card: cardInfo,
     games,
+    migrated: loadChoices()
+      .migrations.filter((m) => !m.seen)
+      .map((m) => ({ id: m.id, title: games.find((g) => g.crc === m.to)?.title ?? m.where, kept: m.kept, reason: m.reason, where: m.where })),
     maxGames: pack.limit,
     packVersion: pack.version,
     pack: { version: pack.version, limit: pack.limit, streaming: pack.streaming, reason: pack.reason, coreVersion: pack.core.version },

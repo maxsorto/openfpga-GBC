@@ -64,6 +64,8 @@ export interface Library {
   source: { kind: 'folder' | 'card'; root: string; files: number; duplicates: number; unreadable: string[] };
   card: CardInfo | null;
   games: Game[];
+  /** Games whose choices moved to a new dump of the same game, not shown yet. */
+  migrated: { id: string; title: string; kept: string[]; reason: 'library' | 'card'; where: string }[];
   /** Games the pack holds: 31 for v6, 2047 for v7. */
   maxGames: number;
   packVersion: number;
@@ -120,6 +122,12 @@ export interface SyncPlan {
   keptCard: { crc: string; title: string; libraryFile: string; cardFile: string; cardCrc: string | null }[];
   unchanged: number;
   saves: { file: string; rom: string | null; state: 'ok' | 'loses' | 'orphan' }[];
+  /** Suspend points made with a different ROM than the one sync places. Sync keeps a copy on the Mac and empties them. */
+  suspends: { file: string; size: number; rom: string; title: string; oldCrc: string; newCrc: string }[];
+  /** "Use the library's" replacements: the old copy's choices that follow the new dump. */
+  carryOver: { from: string; to: string; file: string; title: string; kept: string[] }[];
+  /** Favorites changed on the Pocket (favorites.cfg). */
+  pocketFavorites: { file: string; records: number; sha: string; changes: { crc: string; favorite: boolean; titles: string[] }[] } | null;
   cardOnly: string[];
   menuGames: number;
   stale: number;
@@ -135,6 +143,9 @@ export interface SyncPlan {
     limit: number;
     streaming: boolean;
     reason: string;
+    /** Entries in the favorites and played sections at the top. */
+    favCount: number;
+    playedCount: number;
     titles: string[];
     crcs: string[];
     skipped: string[];
@@ -157,6 +168,7 @@ export const api = {
   settings: async () => json<Settings>(await fetch('/api/settings')),
   saveSettings: async (s: Partial<Settings>) => json<Settings>(await post('/api/settings', s)),
   library: async (card: string | null) => json<Library>(await fetch(`/api/library${card ? `?card=${encodeURIComponent(card)}` : ''}`)),
+  migrationsSeen: async (ids: string[]) => json<{ ok: true }>(await post('/api/migrations/seen', { ids })),
   saveChoices: async (patches: Record<string, ChoicePatch>) => json<{ ok: true }>(await post('/api/choices', { patches })),
   candidates: async (q: string, system: 'gb' | 'gbc') =>
     (await json<{ results: Candidate[] }>(await fetch(`/api/candidates?q=${encodeURIComponent(q)}&system=${system}`))).results,

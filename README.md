@@ -60,9 +60,9 @@ A local web app: a Node backend that reads your ROM folder and the SD card, and 
 |---|---|
 | Library | Point it at one folder. Every ROM is named by CRC32 against the No-Intro database, and duplicates merge. |
 | Box art | Found in libretro-thumbnails automatically. Click a cover to pick another, search, or drop in your own image. |
-| Favorites | Star games in the app. The Pocket shows them first, then everything else A to Z. The pack carries a letter index, so Up and Down jump straight to a letter. |
+| Favorites | Star games in the app. The Pocket shows them first, and again under their letter in the full A to Z list. The pack carries a letter index, so Up and Down jump straight to a letter. A new dump of a game at the same path keeps its star, cover and title. |
 | Sync | A plan shows what will be copied, removed and kept, and checks free space first. ROMs are copied, checked by CRC, then renamed into place. The app only removes ROMs it placed, and it never touches saves. |
-| Your card | ROMs already on the card are adopted under their current names, so their saves keep working. A card ROM with the same name as a library game but different contents is kept, because its save is tied to that name. |
+| Your card | ROMs already on the card are adopted under their current names, so their saves keep working. A card ROM with the same name as a library game but different contents is kept, because its save is tied to that name. If a ROM's contents change, its suspend point (a save state of the old ROM) is backed up and cleared; battery saves are never touched. |
 | Themes | DMG, and Game Boy Color with six shells. Atomic Purple shows the board through the plastic. |
 
 The app reads the core version on the card. With the streaming core it writes every game (up to 2047) to the pack; with an older core it writes the first 31 of the sync order.

@@ -24,9 +24,11 @@ There is no Python dependency.
    filter for each.
 4. **Two views.** *Library* shows everything in the folder. *Pocket* shows what the card
    will hold, in the order the Pocket shows it.
-5. **Favorites.** Star any game. On the Pocket, games you played come first (most
-   recent first), then favorites A to Z, then everything else A to Z. Play history
-   does not exist yet; the streaming core will record it, and the app will read it.
+5. **Favorites.** Star any game, here or on the Pocket. On the Pocket, games you played
+   come first (most recent first), then favorites A to Z, then the A to Z list. With the
+   streaming core the A to Z list has every game, so a favorite also shows under its
+   letter. Favorites you set on the Pocket come back on the next sync (see
+   "Favorites from the Pocket"). Play history does not exist yet.
 6. **Fix a cover.** Click a cover to search the libretro box art, use a title card, or
    drop in your own PNG or JPEG. The preview shows the 128 by 128 center image and the
    80 by 80 list image, in the Pocket's 16 bit color. Click a title to rename it.
@@ -49,7 +51,10 @@ There is no Python dependency.
 | `Assets/gbc/common/*.gb`, `*.gbc` | Copied from the library, or adopted if already there. Removed only if `cover-picker.json` lists them and the file is still the ROM the app put there. |
 | `Assets/gbc/common/covers.bin` | Written. The old one is copied to the Mac first. |
 | `Assets/gbc/common/cover-picker.json` | Written. The list of ROMs the app placed. |
-| `Saves/` (`.sav`, `.sus`, everything else) | Never touched. |
+| `Saves/gbc/common/*.sav` | Never touched. |
+| `Saves/gbc/common/*.sus` | Only a suspend point made with a different ROM than the one sync puts at that name: copied to the Mac, then emptied (see "Suspend points"). |
+| `Saves/gbc/common/favorites.cfg` | Read, and emptied after its changes are saved (see "Favorites from the Pocket"). |
+| Everything else under `Saves/` | Never touched. |
 | ROMs you copied by hand | Adopted when they are the same ROM as a library game. Otherwise never touched, unless you choose "Use the library's" for one. The plan lists them as "On the card, not from this app". |
 
 The manifest looks like this:
@@ -92,8 +97,37 @@ Sync compares the library with what is on the card, game by game:
 
 The plan lists every `.sav` in `Saves/gbc/common` and the ROM it belongs to after sync
 (same name before the extension). It warns when a save would lose its ROM, for example
-when a game leaves the library. Saves are only read, never moved, renamed or removed. A
-save without a ROM works again if the game comes back under the same name.
+when a game leaves the library. Battery saves are only read, never moved, renamed or
+removed. A save without a ROM works again if the game comes back under the same name.
+
+### Suspend points
+
+A suspend point (`.sus`) is a snapshot of a running game. Resuming one made with a
+different ROM crashes the core. So when sync puts a ROM at a name where a different ROM
+was before (you chose "Use the library's", or a ROM changed in the library), and a
+`.sus` with that name is not empty, the plan says "Suspend point for X was made with a
+different ROM and will be cleared". Sync copies it to the Mac
+(`covers-backups/suspends/`) and empties it, which is what the core does after a resume.
+The battery save is not touched, and no `._` file is left for it.
+
+### Favorites from the Pocket
+
+The core records favorites you set on the Pocket in `Saves/gbc/common/favorites.cfg`,
+a 4096 byte file:
+
+| Offset | Size | What |
+| --- | --- | --- |
+| 0 | 4 | `FAV1` |
+| 4 | u16 | version, 1 |
+| 6 | u16 | n, records used |
+| 8 | n x 8 B | u32 CRC32 of the ROM, u8 state (1 favorite, 0 not), 3 pad |
+
+The rest is zero, and a later record wins for the same CRC. Every plan reads it and shows
+"N favorite changes from the Pocket". They count for the pack the sync writes, and sync
+saves them in the app by CRC (a ROM only on the card, or a card copy, keeps its own
+star). After the pack is written, sync writes the file back empty (`FAV1`, version 1,
+n = 0, zeros), unless it changed during the sync. A missing or unreadable file is
+ignored, and so is an all-zero one, which the core makes before its first write.
 
 If the library folder has no ROMs at all, sync stops before it removes anything.
 
@@ -107,9 +141,11 @@ Sync reads `Cores/maxsorto.GBC/core.json` on the card and looks at
 | Version ends in `-cover2` or higher (`-coverN`, N of 2 or more): the streaming core | Pack v7 | All of them, up to 2047 |
 | Any other version, or no core found | Pack v6 | The first 31 |
 
-Either way, sync copies every game, and the menu order is the same: games you played,
-then favorites A to Z, then everything else A to Z (titles that start with a digit or a
-symbol first, under `#`). The plan says which format it chose
+Either way, sync copies every game. The menu starts with games you played, then
+favorites A to Z. With v7, the A to Z list after that has every game, so a favorite is
+in the menu twice: at the top and under its letter, where Up and Down find it. With v6
+each game is listed once, and the rest follow A to Z. Titles that start with a digit or a
+symbol come first in the A to Z list, under `#`. The plan says which format it chose
 and why, for example "Streaming core found (1.4.0-cover2): all 702 games" or "This
 core (1.4.0-cover1) shows 31 games. Install build 17 to see all." With v6 the Pocket
 view marks where the 31 end. With v7 there is no such line.
@@ -185,6 +221,19 @@ and `GITHUB_TOKEN` if you hit GitHub's rate limit for the box art lists.
    Pocket shows a title card.
 4. **Your choices win.** Anything you pick, a title you type, and favorites are saved
    per ROM CRC32, so they follow the ROM even if you rename or move the file.
+5. **A new dump keeps them too.** When the file at the same place changes contents (a
+   better dump, a patched ROM), it gets a new CRC32, but it is still the same game. The
+   app notices and gives the new CRC the old one's star, cover, title and choice of copy,
+   except any it already has of its own, and says so once ("Pokemon Silver: new dump,
+   kept your star and cover"). The same place means:
+   - the same path in the library folder, seen on the next scan;
+   - the same file name on the card: "Use the library's" carries the card copy's own
+     choices to the library dump, and a ROM you copied to the card yourself and then
+     replaced under the same name keeps its choices.
+
+   If a file moves or is renamed and changes at the same time, it may be a different
+   game, so nothing moves. Nothing is lost either way: the old choices stay under the
+   old CRC32. Saves are not affected.
 
 The default title is the No-Intro name (or the file name) without tags, with
 "Legend of Zelda, The" turned into "The Legend of Zelda" and accents removed. The core
@@ -202,12 +251,18 @@ Both formats are defined by `tools/make_cover_pack.py` (v6 by default, v7 with `
 | --- | --- | --- |
 | Games | up to 31 | up to 2047 |
 | Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad[3], size u32, CRC32 u32, path[76] |
+| Flags | bit 0 original Game Boy | bit 0 original Game Boy, bit 1 favorite |
 | Art per game | 45568 B, packed back to back | the same 45568 B, padded with zeros to 65536 B |
+| After the log path | nothing | one more path struct: `/Saves/<platform>/common/favorites.cfg` |
+| Favorites | listed once | at the top, and again under their letter (full copies) |
 
 Both start with a 16 byte header (`GBCV`, version, count, 128, 80) and 512 reserved
 bytes, and end with three 256 byte path structs per game (ROM, `.sav`, `.sus`) and one
-for `picker.log`. The CRC32 in v7 is of the whole ROM file, so the core can key play
-history by game. The fixed 64 KB stride lets the core read any cover by its index.
+for `picker.log`. v7 adds one for `favorites.cfg` right after it: the core finds it at
+paths0 + (count x 3 + 1) x 256. The CRC32 in v7 is of the whole ROM file, so the core can
+key play history and favorites by game. Flags bit 1 is set on every entry of a favorite,
+so the core knows a game is a favorite wherever it is in the list. The fixed 64 KB
+stride lets the core read any cover by its index.
 
 In v7 the reserved area starts with a letter index, so Up and Down on the Pocket jump
 between letters:
@@ -215,9 +270,9 @@ between letters:
 | Offset | Size | What |
 | --- | --- | --- |
 | 16 | 4 | `IDX1` |
-| 20 | u16 | Favorites: how many games after the played ones are favorites |
-| 22 | u16 | Played: how many games lead the menu as recently played (0 until play history exists) |
-| 24 | 27 x u16 | Where each letter starts: `#`, then A to Z. The menu index of the first game in the A to Z part whose title, as written in the entry, starts with that letter, ignoring case. `0xFFFF` if none. |
+| 20 | u16 | Favorites: how many entries in the favorites section at the top, after the played ones |
+| 22 | u16 | Played: how many entries lead the menu as recently played (0 until play history exists) |
+| 24 | 27 x u16 | Where each letter starts: `#`, then A to Z. The menu index of the first entry in the A to Z list (after the top sections; it includes favorites again) whose title, as written in the entry, starts with that letter, ignoring case. `0xFFFF` if none. |
 
 The rest of the 512 bytes is zero. v6 keeps all 512 bytes zero.
 
@@ -260,12 +315,24 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   removes nothing.
 - `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
   give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
-  with every game, favorites first, each entry carrying its ROM's CRC32; switching the
-  core back gives v6 with 31.
+  with the favorites at the top and again under their letter (full copies, flags bit 1
+  on both), each entry carrying its ROM's CRC32, and the `favorites.cfg` path right after
+  the log path; switching the core back gives v6 with 31 and no extras.
 - `progress.test.ts`: a sync with only the pack to write, on a card made slow on purpose,
   sends each step and its bytes as it goes, and the app's event stream delivers them
   before the end. Also: no `._` files are left for files the app renamed or removed,
   and other `._` files stay.
+- `pocket.test.ts`: the Silver case again. Using the library's Silver clears the suspend
+  point made with the card's Silver (a copy is kept, the `.sav` is untouched); a library
+  ROM that changed clears its suspend point too, a new or unchanged one never does.
+  `favorites.cfg`: parsing, later records winning, malformed and all-zero files ignored,
+  changes shown in the plan, used in the pack and saved by CRC, the file emptied after,
+  and a file that changes after the plan refused.
+- `migrate.test.ts`: a new dump at the same library path keeps star, cover and title,
+  once, without overriding the new dump's own choices; "Use the library's" carries the
+  card copy's own star and title; a hand-copied card ROM replaced under the same name
+  keeps its star; a file that moves and changes at once moves nothing, and the old
+  choices stay.
 - `order.test.ts`: played, then favorites, then the rest, as the Pocket shows them; the
   letter groups and the v7 letter index, including played and favorite counts.
 
@@ -280,7 +347,9 @@ which does not matter on the device.
 
 - `~/Library/Application Support/GBC Cover Companion/`
   - `settings.json`: the library folder.
-  - `choices.json`: titles, art picks and favorites, keyed by ROM CRC32.
+  - `choices.json`: titles, art picks and favorites, keyed by ROM CRC32, and a log of
+    choices that moved to a new dump.
+  - `rom-paths.json`: the CRC32 last seen at each ROM path, to recognize a new dump.
   - `custom-art/`: images you dropped in.
 - `~/Library/Caches/GBC Cover Companion/`
   - `dats/`: No-Intro DATs. Refreshed after 30 days.
@@ -324,7 +393,8 @@ companion/
       thumbs.ts       libretro-thumbnails lists and box art download
       limit.ts        download queue: at most 6 at once, covers on screen first
       match.ts        title cleanup and name matching
-      choices.ts      saved choices
+      choices.ts      saved choices, and moving them to a new dump
+      romPaths.ts     the CRC32 last seen at each ROM path
       art.ts          loading art, fitted previews and their disk cache
       pillow.ts       port of the Pillow steps used by make_cover_pack.py
       image.ts        decoding, PNG encoding, title cards

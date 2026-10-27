@@ -4,6 +4,7 @@
  * tools/make_cover_pack.py --v7.
  *
  *   entry 128 B: title char[40] | flags u8 | pad[3] | size u32 | crc32 u32 | path char[76] (cut to 75)
+ *                flags bit 0 = original Game Boy, bit 1 = favorite (on every entry of a favorite game)
  *   blobs: the same 45568 B of art, padded with zeros to 65536 B each
  *
  * The 512 B reserved area starts with a letter index, so Up/Down on the Pocket
@@ -12,21 +13,27 @@
  *   24  27 x u16 section starts: '#', then A to Z. Each is the menu index of the
  *       first game in the A to Z part (after played and favorites) whose title,
  *       as written in the entry, starts with that letter, ignoring case. 0xFFFF if none.
+ *
+ * The app lists favorites twice: once in the favorites section at the top, and again
+ * under their letter in the A to Z list, which holds every game. Both entries are full
+ * copies (title, flags, size, CRC, art, path structs).
+ * After the picker.log path struct comes one more: /Saves/<platform>/common/favorites.cfg.
  * The rest of the layout is in pack-common.ts.
  */
 import { ENTRY_BYTES, RESERVED_BYTES, asciiTitle, fixed, gamePaths, letterGroup, makeWriter, type PackEntry, type PackFormat } from './pack-common.js';
 
 export const NO_SECTION = 0xffff;
 
-/** How many games lead the menu as played, then as favorites. They must come first, in that order. */
+/** How many entries lead the menu as the played section, then as the favorites section. */
 function leadCounts(games: PackEntry[]): { played: number; fav: number } {
   let i = 0;
-  while (i < games.length && games[i].played) i++;
+  while (i < games.length && games[i].section === 'played') i++;
   const played = i;
-  while (i < games.length && games[i].favorite && !games[i].played) i++;
+  while (i < games.length && games[i].section === 'favorite') i++;
   const fav = i - played;
   for (let j = i; j < games.length; j++) {
-    if (games[j].played || games[j].favorite) throw new Error('Pack v7: played games and favorites must come before the A to Z part');
+    const sec = games[j].section ?? 'az';
+    if (sec !== 'az') throw new Error('Pack v7: the played and favorites sections must come before the A to Z list');
   }
   return { played, fav };
 }
@@ -62,12 +69,14 @@ export const formatV7: PackFormat = {
     const p = gamePaths(g.platform, g.romFile);
     const e = Buffer.alloc(ENTRY_BYTES);
     fixed(asciiTitle(g.title), 40).copy(e, 0);
-    e.writeUInt8(/\.gb$/i.test(g.romFile) ? 1 : 0, 40);
+    e.writeUInt8((/\.gb$/i.test(g.romFile) ? 1 : 0) | (g.favorite ? 2 : 0), 40);
     e.writeUInt32LE(g.romSize >>> 0, 44);
     e.writeUInt32LE(parseInt(g.crc, 16) >>> 0, 48);
     fixed(Buffer.from(p.rom, 'utf8').subarray(0, ROM_PATH_MAX_V7), 76).copy(e, 52);
     return e;
   },
+  // The core opens favorites.cfg through this path struct, right after the log one.
+  trailer: (platform) => [`/Saves/${platform}/common/favorites.cfg`],
   arrange(games) {
     if (ascending(letterIndex(games).starts)) return games;
     // menuOrder() sorts by the same letter rule, so this does not happen. If it does,

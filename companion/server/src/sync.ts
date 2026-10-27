@@ -13,17 +13,24 @@
  * slow card writes. Files the app renames or removes take their "._" sidecar with them.
  *
  * Only .gb and .gbc files in Assets/gbc/common, covers.bin and cover-picker.json are
- * ever written or removed. Saves (.sav, .sus and everything under Saves) are never touched.
+ * ever written or removed in Assets. Under Saves, only two things are ever written:
+ * favorites.cfg is emptied after its changes are saved, and a suspend point (.sus) made
+ * with a different ROM than the one placed is copied to the Mac and emptied, because
+ * resuming it would crash the core. Battery saves (.sav) are never touched.
  */
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { BACKUPS_KEPT, BACKUP_DIR, COVERS_REL, PACK_PLATFORM, SLOW_IO_MS } from './config.js';
 import { packBlob } from './art.js';
-import { ChunkedWriter, copyFileChunked, hashFile, isOurPack, rememberWrittenPack, removeAppleDouble, sleep } from './io.js';
+import { ChunkedWriter, copyFileChunked, hashFile, isOurPack, rememberWrittenPack, removeAppleDouble, sleep, withoutNewSidecar } from './io.js';
+import { migrateChoices, updateChoices } from './choices.js';
+import { emptyFavorites, favoritesPath } from './pocketfav.js';
+import type { PlanSuspend } from './plan.js';
 import { cardRomDir } from './library.js';
-import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeManifest, type ManifestEntry } from './manifest.js';
+import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeFileSynced, writeManifest, type ManifestEntry } from './manifest.js';
 import { PACK_HEAD_MAX, packWriter, readPackSummary, type StreamGame } from './pack.js';
 import { makePlan, type PlanOptions, type SyncPlan } from './plan.js';
 import { crc32, fileCrc, flushCrcCache, rememberCrc } from './roms.js';
@@ -116,6 +123,42 @@ async function backupCovers(target: string, onBytes: (n: number) => void): Promi
   return backup;
 }
 
+/**
+ * A suspend point made with another ROM crashes the core when it resumes. Keep a
+ * copy on the Mac, then empty it, which is what the core does after a resume. The
+ * battery save (.sav) is never touched.
+ */
+async function clearSuspend(card: string, s: PlanSuspend): Promise<string | null> {
+  if (!/\.sus$/i.test(s.file) || /[/\\]/.test(s.file)) throw new Error(`Refusing to touch ${s.file}`);
+  const file = path.join(card, 'Saves', PACK_PLATFORM, 'common', s.file);
+  let size = 0;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return null;
+  }
+  if (size === 0) return null;
+  const dir = path.join(BACKUP_DIR, 'suspends');
+  fs.mkdirSync(dir, { recursive: true });
+  const keep = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')} ${s.file}`);
+  await fsp.copyFile(file, keep);
+  await withoutNewSidecar(file, async () => {
+    const fh = await fsp.open(file, 'r+');
+    try {
+      await fh.truncate(0);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+  });
+  return keep;
+}
+
+/** "star, cover and title" */
+export function words(list: string[]): string {
+  return list.length <= 1 ? (list[0] ?? '') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+}
+
 /** Copy one ROM to the card and prove it arrived intact. */
 async function copyRom(from: string, to: string, crc: string, slowMs: number): Promise<void> {
   const data = await fsp.readFile(from);
@@ -146,7 +189,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   emit({ type: 'phase', phase: 'check', message: 'Checking the card and the library' });
   // Let the first event reach the app before the plan is worked out again.
   await sleep(0);
-  const { plan, packGames, manifestPlaced } = await makePlan(req);
+  const { plan, packItems, manifestPlaced } = await makePlan(req);
   if (req.signature && req.signature !== plan.signature) {
     throw new Error('The library or the card changed since this plan was made. Close this and sync again to see the new plan.');
   }
@@ -160,6 +203,13 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   }
   const card = plan.card;
   const romDir = cardRomDir(card);
+
+  // Favorites changed on the Pocket: save them in the app (by CRC). The plan already counted them.
+  if (plan.pocketFavorites?.changes.length) {
+    updateChoices(Object.fromEntries(plan.pocketFavorites.changes.map((c) => [c.crc, { favorite: c.favorite }])));
+    const on = plan.pocketFavorites.changes.filter((c) => c.favorite).length;
+    emit({ type: 'log', level: 'info', message: `Saved ${plan.pocketFavorites.changes.length} favorite changes from the Pocket (${on} starred, ${plan.pocketFavorites.changes.length - on} unstarred).` });
+  }
   fs.mkdirSync(romDir, { recursive: true });
 
   // The manifest as it will be after this sync, kept up to date as files land.
@@ -237,6 +287,11 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       if (!isSafeRomFile(c.file)) throw new Error(`Refusing to write ${c.file}`);
       const to = path.join(romDir, c.file);
       emit({ type: 'file', index: i + 1, total: plan.copy.length, file: c.file, size: c.size, state: 'copying', bytesDone, bytesTotal });
+      const sus = plan.suspends.find((x) => x.rom === c.file);
+      if (sus) {
+        const keep = await clearSuspend(card, sus);
+        if (keep) emit({ type: 'log', level: 'warn', message: `Cleared the suspend point for ${sus.title}: it was made with a different ROM. A copy is on this Mac: ${keep}` });
+      }
       if (c.reason === 'replace') {
         // You chose the library's copy over one you put there by hand. Keep the card's copy on the Mac first.
         const st = fs.statSync(to);
@@ -248,6 +303,11 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
         emit({ type: 'log', level: 'info', message: `Saved the card's copy of ${c.file} on this Mac: ${keep}` });
       }
       await copyRom(c.from, to, c.crc, slowMs);
+      if (c.reason === 'replace' && c.replacesCrc) {
+        // Same card name, new dump: the old copy's choices follow it.
+        const moved = migrateChoices(c.replacesCrc, c.crc, 'card', c.file, true);
+        if (moved?.kept.length) emit({ type: 'log', level: 'info', message: `${c.title}: new dump, kept your ${words(moved.kept)}.` });
+      }
       rememberCrc(to, c.crc);
       placed.set(c.file.toLowerCase(), { crc: c.crc, file: c.file, size: c.size });
       bytesDone += c.size;
@@ -269,22 +329,22 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   const tmp = path.join(path.dirname(target), '.covers.bin.part');
   let packBytes = 0;
   let backup: string | null = null;
-  if (packGames.length) {
-    const total = writer.expectedSize(packGames.length);
-    emit({ type: 'phase', phase: 'pack', message: `Building and writing covers.bin (pack v${writer.version}, ${packGames.length} games)` });
+  if (packItems.length) {
+    const total = writer.expectedSize(packItems.length);
+    emit({ type: 'phase', phase: 'pack', message: `Building and writing covers.bin (pack v${writer.version}, ${packItems.length} entries)` });
     emit({ type: 'bytes', phase: 'pack', done: 0, total });
     try {
       const out = await ChunkedWriter.open(tmp, (n) => emit({ type: 'bytes', phase: 'pack', done: n, total }), slowMs);
       let written: { bytes: number; sha: string };
       try {
-        const games: StreamGame[] = packGames.map((g) => ({
+        const games: StreamGame[] = packItems.map(({ game: g, section }) => ({
           title: g.title,
           romFile: g.file,
           platform: g.platform,
           romSize: g.size,
           crc: g.crc,
           favorite: g.favorite,
-          played: g.lastPlayed != null,
+          section,
           blob: async () => {
             try {
               return await packBlob(g.art, g.title);
@@ -329,7 +389,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       syncDir(path.dirname(target));
       const st = fs.statSync(target);
       const summary = readPackSummary(readHead(target, PACK_HEAD_MAX));
-      if (st.size !== packBytes || !summary || summary.version !== writer.version || summary.count !== packGames.length) {
+      if (st.size !== packBytes || !summary || summary.version !== writer.version || summary.count !== packItems.length) {
         throw new Error('Verify failed: covers.bin on the card does not match after the rename.');
       }
       rememberWrittenPack(target, written.sha);
@@ -343,6 +403,24 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   }
   const manifest = { version: 1 as const, placed: [...placed.values()] };
   const manifestText = writeManifest(card, manifest);
+
+  // The Pocket's favorite changes are in the app and in the pack now: empty the file.
+  if (plan.pocketFavorites && plan.pocketFavorites.records > 0) {
+    const fav = favoritesPath(card);
+    const now = (() => {
+      try {
+        return crypto.createHash('sha256').update(fs.readFileSync(fav)).digest('hex');
+      } catch {
+        return null;
+      }
+    })();
+    if (now === plan.pocketFavorites.sha) {
+      await withoutNewSidecar(fav, () => writeFileSynced(fav, emptyFavorites()));
+      emit({ type: 'log', level: 'info', message: 'favorites.cfg on the card is empty again.' });
+    } else {
+      emit({ type: 'log', level: 'warn', message: 'favorites.cfg changed during sync, so it was left as it is. Sync again to pick up the new changes.' });
+    }
+  }
 
   const mBack = fs.readFileSync(manifestPath(card), 'utf8');
   if (mBack !== manifestText || serializeManifest(readManifest(card).manifest) !== manifestText) {
@@ -359,7 +437,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
     type: 'done',
     target,
     bytes: packBytes,
-    count: packGames.length,
+    count: packItems.length,
     copied: plan.copy.length,
     removed: plan.remove.length,
     unchanged: plan.unchanged,

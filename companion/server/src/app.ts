@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CACHE_DIR, DATA_DIR, ensureDirs } from './config.js';
 import { artStatus, fittedPreview, saveCustomArt, warmArt, type ArtWarmItem } from './art.js';
-import { isArtRef, updateChoices, type ArtRef, type ChoicePatch } from './choices.js';
+import { isArtRef, markMigrationsSeen, updateChoices, type ArtRef, type ChoicePatch } from './choices.js';
 import { smallJpeg } from './image.js';
 import { buildLibrary } from './library.js';
 import { search } from './match.js';
@@ -83,6 +83,13 @@ app.get('/api/plan', async (c) => {
 app.post('/api/refresh-databases', async (c) => {
   const [d, t] = await Promise.all([loadDats(true), loadThumbs(true)]);
   return c.json({ dats: d.sources, thumbs: t.sources });
+});
+
+/** The app showed these "new dump, kept your star" notes. */
+app.post('/api/migrations/seen', async (c) => {
+  const body = await c.req.json<{ ids?: string[] }>().catch(() => ({ ids: [] as string[] }));
+  markMigrationsSeen(Array.isArray(body?.ids) ? body.ids.filter((x) => typeof x === 'string') : []);
+  return c.json({ ok: true });
 });
 
 app.post('/api/choices', async (c) => {

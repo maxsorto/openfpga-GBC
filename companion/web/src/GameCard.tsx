@@ -24,6 +24,8 @@ interface Props {
   position?: number | null;
   /** Past what today's core shows. */
   beyondLimit?: boolean;
+  /** A favorite's second place, under its letter. */
+  again?: boolean;
   onOpen: (g: Game) => void;
   onFavorite: (g: Game, on: boolean) => void;
   onRename: (g: Game, title: string) => void;
@@ -51,7 +53,7 @@ function Cover({ game }: { game: Game }) {
   );
 }
 
-function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRename }: Props) {
+function GameCardImpl({ game, position, beyondLimit, again, onOpen, onFavorite, onRename }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(game.title);
   const input = useRef<HTMLInputElement>(null);
@@ -94,7 +96,16 @@ function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRenam
           <IconStar on={game.favorite} size={13} />
         </button>
         {position != null && (
-          <span className="slot-no" title={beyondLimit ? 'On the card. Today\'s core shows the first 31.' : 'Shown on the Pocket today'}>
+          <span
+            className={`slot-no ${again ? 'again' : ''}`}
+            title={
+              again
+                ? 'Also at the top with the favorites. On the Pocket it shows in both places.'
+                : beyondLimit
+                  ? "On the card. Today's core shows the first 31."
+                  : 'Place in the Pocket menu'
+            }
+          >
             {String(position).padStart(2, '0')}
           </span>
         )}

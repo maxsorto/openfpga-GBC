@@ -40,3 +40,8 @@ export function packBytes(version: number, count: number): number {
   const stride = version >= 7 ? 65536 : (128 * 128 + 80 * 80) * 2;
   return 16 + 512 + count * (128 + stride + 3 * 256) + 256;
 }
+
+/** "star, cover and title" */
+export function words(list: string[]): string {
+  return list.length <= 1 ? (list[0] ?? '') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+}

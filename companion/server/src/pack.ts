@@ -6,7 +6,7 @@
  */
 import { packV6 } from './pack-v6.js';
 import { packV7 } from './pack-v7.js';
-import { letterGroup, type PackWriter } from './pack-common.js';
+import { letterGroup, type MenuSection, type PackWriter } from './pack-common.js';
 
 export * from './pack-common.js';
 export { MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize } from './pack-v6.js';
@@ -55,6 +55,11 @@ export function compareTitles(a: Orderable, b: Orderable): number {
 
 export type MenuGroup = 'played' | 'favorite' | 'rest';
 
+export interface MenuItem<T> {
+  game: T;
+  section: MenuSection;
+}
+
 export function menuGroup(g: Orderable, played: PlayHistory): MenuGroup {
   return played.has(g.crc) ? 'played' : g.favorite ? 'favorite' : 'rest';
 }
@@ -70,4 +75,17 @@ export function menuOrder<T extends Orderable>(games: T[], played: PlayHistory =
   groups.favorite.sort(compareTitles);
   groups.rest.sort(compareTitles);
   return [...groups.played, ...groups.favorite, ...groups.rest];
+}
+
+/**
+ * The menu as pack entries. v6 (favoritesTwice false) is menuOrder(): each game
+ * once. v7 (favoritesTwice true) keeps the played and favorites sections at the
+ * top, then lists every game A to Z, so a favorite also shows under its letter.
+ */
+export function menuList<T extends Orderable>(games: T[], played: PlayHistory, favoritesTwice: boolean): MenuItem<T>[] {
+  const ordered = menuOrder(games, played);
+  if (!favoritesTwice) return ordered.map((game) => ({ game, section: menuGroup(game, played) === 'rest' ? 'az' : (menuGroup(game, played) as MenuSection) }));
+  const top = ordered.filter((g) => menuGroup(g, played) !== 'rest').map((game) => ({ game, section: menuGroup(game, played) as MenuSection }));
+  const all = [...games].sort(compareTitles).map((game) => ({ game, section: 'az' as const }));
+  return [...top, ...all];
 }

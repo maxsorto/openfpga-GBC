@@ -8,8 +8,11 @@ import path from 'node:path';
 import { COVERS_REL } from './config.js';
 import { buildLibrary, cardRomDir, listCardRoms, playHistory, type Game, type Library } from './library.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
-import { menuOrder, packWriter } from './pack.js';
+import { menuList, packWriter, type MenuItem } from './pack.js';
 import { fileCrc } from './roms.js';
+import { readPocketFavorites, type PocketFavorites } from './pocketfav.js';
+import { pendingMove } from './choices.js';
+import { PACK_PLATFORM } from './config.js';
 import { folderSpace } from './volumes.js';
 
 export interface PlanCopy {
@@ -47,6 +50,19 @@ export interface PlanKept {
   cardCrc: string | null;
 }
 
+/** A suspend point made with a different ROM than the one sync puts at that name. */
+export interface PlanSuspend {
+  /** File name in Saves/gbc/common. */
+  file: string;
+  size: number;
+  /** The ROM it belongs to. */
+  rom: string;
+  title: string;
+  /** CRC of the ROM it was made with, and of the ROM sync places. */
+  oldCrc: string;
+  newCrc: string;
+}
+
 export interface PlanSave {
   /** File name in Saves/gbc/common. */
   file: string;
@@ -75,6 +91,18 @@ export interface SyncPlan {
   unchanged: number;
   /** Battery saves in Saves/gbc/common and the ROM each belongs to after sync. Read only. */
   saves: PlanSave[];
+  /**
+   * Suspend points (.sus) made with a different ROM than the one sync places at that
+   * name. Resuming one crashes the core, so sync keeps a copy on the Mac and empties it.
+   */
+  suspends: PlanSuspend[];
+  /**
+   * ROMs replaced under the same card name ("Use the library's"): the old copy's
+   * choices the new one does not have yet move to it when sync places it.
+   */
+  carryOver: { from: string; to: string; file: string; title: string; kept: string[] }[];
+  /** Favorites changed on the Pocket (favorites.cfg). Sync saves them in the app, then empties the file. */
+  pocketFavorites: (Omit<PocketFavorites, 'changes'> & { changes: { crc: string; favorite: boolean; titles: string[] }[] }) | null;
   /** ROM files on the card the app did not place, adopt or replace. Never touched. */
   cardOnly: string[];
   /** Games in the Pocket menu, library and card only. */
@@ -98,6 +126,9 @@ export interface SyncPlan {
     reason: string;
     titles: string[];
     crcs: string[];
+    /** Entries in the favorites and played sections at the top. */
+    favCount: number;
+    playedCount: number;
     /** Left out of the pack because their path is too long for the core. */
     skipped: string[];
   };
@@ -137,7 +168,8 @@ export interface PlanResult {
   plan: SyncPlan;
   library: Library;
   /** Games in pack order, cut to what the pack holds. */
-  packGames: Game[];
+  /** Pack entries in menu order, with their section. In v7 a favorite is listed twice. */
+  packItems: MenuItem<Game>[];
   manifestPlaced: ManifestEntry[];
 }
 
@@ -145,7 +177,10 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
   const card = path.resolve(opts.card);
   const romDir = cardRomDir(card);
   if (!fs.existsSync(card)) throw new Error(`Card not found: ${card}`);
-  const library = await buildLibrary({ library: opts.library, card });
+  // Favorites set on the Pocket count already, so the pack this sync writes has them.
+  const pocketFav = readPocketFavorites(card);
+  const favoriteOverrides = new Map((pocketFav?.changes ?? []).map((c) => [c.crc, c.favorite]));
+  const library = await buildLibrary({ library: opts.library, card, favoriteOverrides });
   const m = readManifest(card);
   const placed = m.manifest.placed;
   const placedByName = new Map(placed.map((e) => [e.file.toLowerCase(), e]));
@@ -209,6 +244,30 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
     }
   }
 
+  // Suspend points that belong to a different ROM than the one this sync places.
+  const savesDir = path.join(card, 'Saves', PACK_PLATFORM, 'common');
+  let savesList: string[] = [];
+  try {
+    savesList = fs.readdirSync(savesDir);
+  } catch {
+    savesList = [];
+  }
+  const suspends: PlanSuspend[] = [];
+  for (const c of copy) {
+    const before = c.reason === 'replace' ? c.replacesCrc : c.reason === 'changed' ? placedByName.get(c.file.toLowerCase())?.crc : undefined;
+    if (!before || before === c.crc) continue;
+    const want = `${c.file.replace(/\.[^.]+$/, '')}.sus`.toLowerCase();
+    const sus = savesList.find((f) => f.toLowerCase() === want);
+    if (!sus) continue;
+    let size = 0;
+    try {
+      size = fs.statSync(path.join(savesDir, sus)).size;
+    } catch {
+      continue;
+    }
+    if (size > 0) suspends.push({ file: sus, size, rom: c.file, title: c.title, oldCrc: before, newCrc: c.crc });
+  }
+
   const remove: PlanRemove[] = [];
   let stale = 0;
   // Without a library folder nothing leaves the library, so nothing is removed.
@@ -245,10 +304,10 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
 
   const writer = packWriter(library.pack.version);
   const menu = library.games.filter((g) => g.cardState !== 'cardKept');
-  const ordered = menuOrder(menu, playHistory(card));
-  const packable = ordered.filter((g) => !g.problems.length);
-  const packGames = packable.slice(0, writer.maxGames);
-  const packBytes = packGames.length ? writer.expectedSize(packGames.length) : 0;
+  const list = menuList(menu, playHistory(card), writer.version >= 7);
+  const packItems = list.filter((it) => !it.game.problems.length).slice(0, writer.maxGames);
+  const packGames = packItems.map((it) => it.game);
+  const packBytes = packItems.length ? writer.expectedSize(packItems.length) : 0;
 
   const block = clusterSize(card);
   const copyBytes = copy.reduce((n, c) => n + c.size, 0);
@@ -273,6 +332,17 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
     keptCard,
     unchanged,
     saves,
+    suspends,
+    carryOver: copy
+      .filter((c) => c.reason === 'replace' && c.replacesCrc && c.replacesCrc !== c.crc)
+      .map((c) => ({ from: c.replacesCrc!, to: c.crc, file: c.file, title: c.title, kept: pendingMove(c.replacesCrc!, c.crc).kept }))
+      .filter((x) => x.kept.length > 0),
+    pocketFavorites: pocketFav
+      ? {
+          ...pocketFav,
+          changes: pocketFav.changes.map((c) => ({ ...c, titles: [...new Set(library.games.filter((g) => g.crc === c.crc).map((g) => g.title))] })),
+        }
+      : null,
     cardOnly,
     menuGames: menu.length,
     stale,
@@ -290,7 +360,9 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       reason: library.pack.reason,
       titles: packGames.map((g) => g.title),
       crcs: packGames.map((g) => g.crc),
-      skipped: ordered.filter((g) => g.problems.length).map((g) => g.file),
+      favCount: packItems.filter((it) => it.section === 'favorite').length,
+      playedCount: packItems.filter((it) => it.section === 'played').length,
+      skipped: menu.filter((g) => g.problems.length).map((g) => g.file),
     },
     space: { freeBytes, neededBytes, enough: enoughAsIs || removeFirst, removeFirst },
     signature: '',
@@ -303,11 +375,13 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
         remove.map((r) => [r.crc, r.file]),
         adopt.map((a) => [a.crc, a.file]),
         keptCard.map((k) => [k.crc, k.cardFile]),
+        suspends.map((x) => [x.file, x.size, x.oldCrc, x.newCrc]),
+        pocketFav?.sha ?? null,
         writer.version,
-        packGames.map((g) => [g.crc, g.title, g.file, g.art]),
+        packItems.map((it) => [it.game.crc, it.game.title, it.game.file, it.game.art, it.section, it.game.favorite]),
       ]),
     )
     .digest('hex')
     .slice(0, 16);
-  return { plan, library, packGames, manifestPlaced: placed };
+  return { plan, library, packItems, manifestPlaced: placed };
 }

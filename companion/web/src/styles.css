@@ -2008,3 +2008,11 @@ button.link.small {
     opacity: 0.45;
   }
 }
+
+/* A favorite's second place, under its letter: the same number badge, edged in the star color. */
+.slot-no.again {
+  box-shadow: 0 0 0 2px var(--primary);
+}
+[data-theme='gbc'] .slot-no.again {
+  box-shadow: 0 0 0 2px var(--accent);
+}

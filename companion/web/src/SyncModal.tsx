@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, subscribeSync, type SyncEvent, type SyncPhase, type SyncPlan } from './api';
-import { IconCheck, IconClose, IconEject, IconWarn } from './Icons';
-import { fmtBytes, isVolumePath } from './util';
+import { IconCheck, IconClose, IconEject, IconStar, IconWarn } from './Icons';
+import { fmtBytes, isVolumePath, words } from './util';
 
 type Stage = 'planning' | 'plan' | 'running' | 'done' | 'error';
 
@@ -230,7 +230,11 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 ) : (
                   <Tile label="Unchanged" value={`${plan.unchanged}`} sub="skipped" tone="dim" />
                 )}
-                <Tile label={`Pack v${plan.pack.version}`} value={`${plan.pack.count}`} sub={fmtBytes(plan.pack.bytes)} />
+                <Tile
+                  label={`Pack v${plan.pack.version}`}
+                  value={`${plan.pack.count}`}
+                  sub={plan.pack.streaming && plan.pack.favCount ? `${fmtBytes(plan.pack.bytes)}, ${plan.pack.favCount} twice` : fmtBytes(plan.pack.bytes)}
+                />
               </div>
 
               <div className={`space ${space?.enough ? '' : 'short'}`}>
@@ -275,6 +279,41 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 </div>
               ) : (
                 <div className="notice muted">{plan.pack.reason}</div>
+              )}
+              {plan.pocketFavorites && plan.pocketFavorites.changes.length > 0 && (
+                <div className="notice ok">
+                  <IconStar on />
+                  <div>
+                    {(() => {
+                      const ch = plan.pocketFavorites.changes;
+                      const on = ch.filter((c) => c.favorite).length;
+                      return `${ch.length} favorite ${ch.length === 1 ? 'change' : 'changes'} from the Pocket: ${on} starred, ${ch.length - on} unstarred. Sync saves them here and puts them in covers.bin, then empties favorites.cfg.`;
+                    })()}
+                  </div>
+                </div>
+              )}
+              {plan.carryOver.length > 0 && (
+                <div className="notice ok">
+                  <IconCheck />
+                  <div>
+                    {plan.carryOver.map((c) => (
+                      <div key={c.file}>
+                        {c.title}: new dump, keeps your {words(c.kept)}.
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {plan.suspends.length > 0 && (
+                <div className="notice">
+                  <IconWarn />
+                  <div>
+                    {plan.suspends.map((x) => (
+                      <div key={x.file}>Suspend point for {x.title} was made with a different ROM and will be cleared.</div>
+                    ))}
+                    <div className="dim">Resuming it would crash the core. A copy is kept on this Mac. The battery save is not touched.</div>
+                  </div>
+                </div>
               )}
               {plan.saves.some((x) => x.state === 'loses') && (
                 <div className="notice">
@@ -391,6 +430,21 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                     </ul>
                   </details>
                 )}
+                {plan.pocketFavorites && plan.pocketFavorites.changes.length > 0 && (
+                  <details>
+                    <summary>
+                      Favorites from the Pocket <span className="count">{plan.pocketFavorites.changes.length}</span>
+                    </summary>
+                    <ul className="plan-list">
+                      {plan.pocketFavorites.changes.map((c) => (
+                        <li key={c.crc}>
+                          <span className="grow ellipsis">{c.titles.join(', ') || `Not in the library or on the card (${c.crc})`}</span>
+                          <span className={`chip ${c.favorite ? 'chosen' : 'none'}`}>{c.favorite ? 'Starred' : 'Unstarred'}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 {plan.saves.length > 0 && (
                   <details open={plan.saves.some((x) => x.state === 'loses')}>
                     <summary>
@@ -422,7 +476,10 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                   </ol>
                 </details>
               </div>
-              <p className="plan-foot dim">Saves (.sav and .sus) and everything under Saves are never touched.</p>
+              <p className="plan-foot dim">
+                Battery saves (.sav) are never touched. Under Saves, sync only empties favorites.cfg after saving its changes, and a suspend point
+                made with a different ROM, after keeping a copy.
+              </p>
             </>
           )}
 

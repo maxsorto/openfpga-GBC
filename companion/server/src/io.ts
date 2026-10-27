@@ -186,3 +186,17 @@ export function isOurPack(target: string): boolean {
     return false;
   }
 }
+
+/**
+ * Run `fn` on a file that is not the app's own (a save, favorites.cfg) and remove
+ * the "._" sidecar macOS may make for it, unless that sidecar was already there.
+ */
+export async function withoutNewSidecar<T>(file: string, fn: () => Promise<T> | T): Promise<T> {
+  const sidecar = path.join(path.dirname(file), `._${path.basename(file)}`);
+  const had = fs.existsSync(sidecar);
+  try {
+    return await fn();
+  } finally {
+    if (!had) removeAppleDouble(file);
+  }
+}

@@ -25,11 +25,17 @@ export interface PackEntry {
   romSize: number;
   /** CRC32 of the whole ROM file, 8 hex digits. v6 does not store it; v7 does. */
   crc?: string;
-  /** Starred. v7 counts the favorites at the start of the menu in its letter index. */
+  /** Starred. v7 sets entry flags bit 1 on every entry of a favorite game. */
   favorite?: boolean;
-  /** Played on the Pocket. Played games come first in the menu. No play history yet. */
-  played?: boolean;
+  /**
+   * Which part of the menu this entry is in: the played section and the favorites
+   * section at the top, then the A to Z list. v7 counts the top sections in its
+   * letter index. Left out, an entry is in the A to Z list.
+   */
+  section?: MenuSection;
 }
+
+export type MenuSection = 'played' | 'favorite' | 'az';
 
 /** A game with its art decoded, for building a pack in memory (tests, small packs). */
 export interface PackGame extends PackEntry {
@@ -116,6 +122,8 @@ export const BLOB_BYTES = (CEN * CEN + TH * TH) * 2;
  *   blobs, count x stride B (the art, then zeros up to the stride)
  *   path structs, count x 3 x 256 B: ROM, .sav, .sus
  *   one 256 B path struct: /Saves/<platform>/common/picker.log
+ *   v7 only: one more, /Saves/<platform>/common/favorites.cfg (the core finds it at
+ *   paths0 + (count * 3 + 1) * 256, so it must follow the log one)
  */
 export interface PackFormat {
   version: number;
@@ -125,6 +133,8 @@ export interface PackFormat {
   entry(g: PackEntry): Buffer;
   /** The 512 reserved bytes after the header. Zeros when not given. */
   reserved?(games: PackEntry[]): Buffer;
+  /** Path structs after the picker.log one, for files the core opens by name. */
+  trailer?(platform: string): string[];
   /** A last chance to fix the order, for formats that rely on it. Returns the games to write, in order. */
   arrange?<T extends PackEntry>(games: T[]): T[];
 }
@@ -136,7 +146,8 @@ export interface PackBuildOptions {
 }
 
 export function packSize(fmt: PackFormat, count: number): number {
-  return HEADER_BYTES + RESERVED_BYTES + count * (ENTRY_BYTES + fmt.stride + 3 * PATH_STRUCT_BYTES) + PATH_STRUCT_BYTES;
+  const trailer = fmt.trailer?.('gbc').length ?? 0;
+  return HEADER_BYTES + RESERVED_BYTES + count * (ENTRY_BYTES + fmt.stride + 3 * PATH_STRUCT_BYTES) + (1 + trailer) * PATH_STRUCT_BYTES;
 }
 
 function checkGames(fmt: PackFormat, games: PackEntry[]): void {
@@ -163,13 +174,14 @@ function header(fmt: PackFormat, games: PackEntry[]): Buffer {
   return h;
 }
 
-function pathStructs(games: PackEntry[], logPlatform: string): Buffer {
+function pathStructs(fmt: PackFormat, games: PackEntry[], logPlatform: string): Buffer {
   const out: Buffer[] = [];
   for (const g of games) {
     const p = gamePaths(g.platform, g.romFile);
     for (const q of [p.rom, p.sav, p.sus]) out.push(fixed(Buffer.from(q, 'utf8'), PATH_STRUCT_BYTES));
   }
   out.push(fixed(Buffer.from(`/Saves/${logPlatform}/common/picker.log`, 'utf8'), PATH_STRUCT_BYTES));
+  for (const q of fmt.trailer?.(logPlatform) ?? []) out.push(fixed(Buffer.from(q, 'utf8'), PATH_STRUCT_BYTES));
   return Buffer.concat(out);
 }
 
@@ -190,7 +202,7 @@ export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBu
     parts.push(padBlob(fmt, artBlob(g.art)));
     opts.onProgress?.(i + 1);
   });
-  parts.push(pathStructs(games, opts.logPlatform ?? 'gbc'));
+  parts.push(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
   return Buffer.concat(parts);
 }
 
@@ -217,7 +229,7 @@ export async function writePackWith(
     await put(padBlob(fmt, await games[i].blob()));
     opts.onProgress?.(i + 1);
   }
-  await put(pathStructs(games, opts.logPlatform ?? 'gbc'));
+  await put(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
   if (written !== packSize(fmt, games.length)) throw new Error('Pack came out the wrong size');
   return written;
 }
@@ -256,6 +268,8 @@ export interface PackSummary {
   roms: string[];
   /** v7 only. */
   crcs: string[];
+  /** Entry flags: bit 0 original Game Boy, bit 1 favorite (v7). */
+  flags: number[];
   /** v7 only, when the reserved area starts with "IDX1". */
   index: PackIndex | null;
 }
@@ -268,11 +282,13 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   const titles: string[] = [];
   const roms: string[] = [];
   const crcs: string[] = [];
+  const flags: number[] = [];
   const pathAt = version >= 7 ? 52 : 48;
   for (let i = 0; i < count; i++) {
     const o = HEADER_BYTES + RESERVED_BYTES + i * ENTRY_BYTES;
     if (o + ENTRY_BYTES > buf.length) break;
     titles.push(buf.toString('latin1', o, o + 40).replace(/\0.*$/s, ''));
+    flags.push(buf.readUInt8(o + 40));
     roms.push(buf.toString('utf8', o + pathAt, o + ENTRY_BYTES).replace(/\0.*$/s, ''));
     if (version >= 7) crcs.push(buf.readUInt32LE(o + 48).toString(16).toUpperCase().padStart(8, '0'));
   }
@@ -280,7 +296,7 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   if (version >= 7 && buf.length >= 24 + 27 * 2 && buf.toString('ascii', 16, 20) === 'IDX1') {
     index = { favCount: buf.readUInt16LE(20), playedCount: buf.readUInt16LE(22), starts: Array.from({ length: 27 }, (_, i) => buf.readUInt16LE(24 + i * 2)) };
   }
-  return { version, count, titles, roms, crcs, index };
+  return { version, count, titles, roms, crcs, flags, index };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */

@@ -11,12 +11,15 @@ Layout (little-endian):
   then   one more 256 B path struct: the debug log, /Saves/<platform>/common/picker.log
 v7 (--v7): ver = 7, up to 2047 games, entries are title char[40] | flags u8 | pad[3] | size u32 | crc32 u32 |
 path char[76], and each blob is padded to 65536 B so the core can stream any cover by index.
+Entry flags: bit 0 = original Game Boy, bit 1 = favorite (this tool has no favorites, so bit 1 is 0).
+After the picker.log path struct, v7 has one more: /Saves/<platform>/common/favorites.cfg.
 v7 games are in letter order: titles that start with anything but A to Z first ('#'), then A to Z, each
 group sorted by title ignoring case. The reserved area then starts with a letter index for Up/Down jumps:
   16  "IDX1"   20  fav_count u16   22  played_count u16   24  27 x u16 section starts
   start 0 is '#', 1 to 26 are 'A' to 'Z': the index of the first game whose title (as written in the
   entry) starts with that letter, ignoring case, or 0xFFFF if none. This tool has no favorites or play
-  history, so both counts are 0. The companion app puts played games, then favorites, before the A to Z part.
+  history, so both counts are 0. The companion app puts played games, then favorites, before the A to Z part,
+and lists every game in the A to Z part, so a favorite appears twice (both entries full copies).
 Covers are matched to ROMs by file stem. Art is fitted on a blurred, darkened copy of itself (no black bars).
 
 Usage: make_cover_pack.py --roms DIR --covers DIR --out covers.bin
@@ -104,6 +107,8 @@ def main():
         f.write(b"".join(b.ljust(STRIDE7, b"\0") for b in blobs) if a.v7 else b"".join(blobs))
         f.write(b"".join(paths))
         f.write(f"/Saves/{a.platform}/common/picker.log".encode().ljust(256, b"\0"))
+        if a.v7:  # the core opens favorites.cfg through this struct, right after the log one
+            f.write(f"/Saves/{a.platform}/common/favorites.cfg".encode().ljust(256, b"\0"))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()

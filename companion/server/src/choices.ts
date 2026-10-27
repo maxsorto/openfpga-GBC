@@ -27,9 +27,30 @@ export interface Choice {
   updatedAt?: string;
 }
 
+/**
+ * Choices that moved to a new CRC because the ROM at the same place changed
+ * (a new dump of the same game). Kept so a move happens once, and so the app can
+ * say what it did.
+ */
+export interface Migration {
+  id: string;
+  from: string;
+  to: string;
+  /** library: same path in the library folder. card: replaced under the same card file name. */
+  reason: 'library' | 'card';
+  /** Where it happened: the library path, or the card file name. */
+  where: string;
+  /** What moved, in words: "star", "cover", "title", "choice of copy". */
+  kept: string[];
+  at: string;
+  /** The app has shown it. */
+  seen: boolean;
+}
+
 interface ChoicesFile {
   version: 1;
   games: Record<string, Choice>;
+  migrations: Migration[];
 }
 
 const CRC_RE = /^[0-9A-F]{8}$/;
@@ -37,11 +58,11 @@ const CRC_RE = /^[0-9A-F]{8}$/;
 export function loadChoices(): ChoicesFile {
   try {
     const f = JSON.parse(fs.readFileSync(CHOICES_FILE, 'utf8'));
-    if (f && typeof f.games === 'object') return { version: 1, games: f.games };
+    if (f && typeof f.games === 'object') return { version: 1, games: f.games, migrations: Array.isArray(f.migrations) ? f.migrations : [] };
   } catch {
     // first run or unreadable file
   }
-  return { version: 1, games: {} };
+  return { version: 1, games: {}, migrations: [] };
 }
 
 function save(f: ChoicesFile): void {
@@ -93,4 +114,58 @@ export function updateChoices(patches: Record<string, ChoicePatch>): void {
     else delete f.games[crc];
   }
   save(f);
+}
+
+/** The per-game choices that follow a game to a new dump, and how to say each one. */
+const MOVABLE: { key: 'favorite' | 'art' | 'title' | 'useLibraryCopy'; word: (c: Choice) => string | null }[] = [
+  { key: 'favorite', word: (c) => (c.favorite ? 'star' : null) },
+  { key: 'art', word: () => 'cover' },
+  { key: 'title', word: () => 'title' },
+  { key: 'useLibraryCopy', word: () => null },
+];
+
+/** What a move from one CRC to another would carry: the old choices the new CRC does not have yet. */
+export function pendingMove(from: string, to: string): { fields: Partial<Choice>; kept: string[] } {
+  const f = loadChoices();
+  const old = f.games[from] ?? {};
+  const now = f.games[to] ?? {};
+  const fields: Partial<Choice> = {};
+  const kept: string[] = [];
+  if (f.migrations.some((m) => m.from === from && m.to === to)) return { fields, kept };
+  for (const m of MOVABLE) {
+    if (old[m.key] === undefined || now[m.key] !== undefined) continue;
+    (fields as Record<string, unknown>)[m.key] = old[m.key];
+    const w = m.word(old);
+    if (w) kept.push(w);
+  }
+  return { fields, kept };
+}
+
+/**
+ * Give a game's new dump the choices of the old one: each choice the new CRC does
+ * not have yet is copied. The old CRC keeps its choices too, so nothing is lost.
+ * Runs once per pair. Returns the record, or null when there was nothing to move.
+ */
+export function migrateChoices(from: string, to: string, reason: Migration['reason'], where: string, seen = false): Migration | null {
+  if (!CRC_RE.test(from) || !CRC_RE.test(to) || from === to) return null;
+  const { fields, kept } = pendingMove(from, to);
+  if (!Object.keys(fields).length) return null;
+  const f = loadChoices();
+  f.games[to] = { ...(f.games[to] ?? {}), ...fields, updatedAt: new Date().toISOString() };
+  const m: Migration = { id: `${from}-${to}`, from, to, reason, where, kept, at: new Date().toISOString(), seen };
+  f.migrations.push(m);
+  save(f);
+  return m;
+}
+
+export function markMigrationsSeen(ids: string[]): void {
+  const f = loadChoices();
+  let changed = false;
+  for (const m of f.migrations) {
+    if (ids.includes(m.id) && !m.seen) {
+      m.seen = true;
+      changed = true;
+    }
+  }
+  if (changed) save(f);
 }

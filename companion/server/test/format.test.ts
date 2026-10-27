@@ -88,7 +88,7 @@ NAMES.forEach((n, i) => writeFakeRom(path.join(LIB, i % 2 ? 'GBC' : 'GB', `${n}.
 fs.mkdirSync(ROMDIR, { recursive: true });
 fs.mkdirSync(path.join(CARD, 'Saves', 'gbc', 'common'), { recursive: true });
 
-test('streaming core: plan and sync write v7 with all 40 games, favorites first then A to Z', async () => {
+test('streaming core: v7 lists favorites at the top and again under their letter, with all 40 games A to Z', async () => {
   setCore(CARD, '1.4.0-cover2');
   const lib = await buildLibrary({ library: LIB, card: CARD });
   assert.equal(lib.pack.version, 7);
@@ -97,26 +97,47 @@ test('streaming core: plan and sync write v7 with all 40 games, favorites first 
   updateChoices(Object.fromEntries(fav.map((c) => [c, { favorite: true }])));
 
   const { plan } = await makePlan({ library: LIB, card: CARD });
+  const all = [...NAMES].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
   assert.equal(plan.pack.version, 7);
-  assert.equal(plan.pack.count, 40);
+  assert.equal(plan.pack.count, 42); // 2 favorites + all 40
+  assert.equal(plan.pack.favCount, 2);
   assert.equal(plan.pack.limit, 2047);
   assert.equal(plan.pack.streaming, true);
-  assert.equal(plan.pack.bytes, packWriter(7).expectedSize(40));
+  assert.equal(plan.pack.bytes, packWriter(7).expectedSize(42));
   assert.equal(plan.pack.reason, 'Streaming core found (1.4.0-cover2): all 40 games.');
-  const rest = [...NAMES].filter((n) => n !== 'Game Z0' && n !== 'Game C1').sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
-  assert.deepEqual(plan.pack.titles, ['Game C1', 'Game Z0', ...rest]);
+  assert.deepEqual(plan.pack.titles, ['Game C1', 'Game Z0', ...all]);
   // The space needed includes the whole v7 pack.
   assert.ok(plan.space.neededBytes >= plan.copyBytes + plan.pack.bytes);
 
   await runSync({ library: LIB, card: CARD, signature: plan.signature });
   const file = path.join(ROMDIR, 'covers.bin');
-  assert.equal(fs.statSync(file).size, packWriter(7).expectedSize(40));
+  assert.equal(fs.statSync(file).size, packWriter(7).expectedSize(42));
   const s = readPackSummary(fs.readFileSync(file))!;
   assert.equal(s.version, 7);
-  assert.equal(s.count, 40);
+  assert.equal(s.count, 42);
   assert.deepEqual(s.titles, plan.pack.titles);
+  assert.equal(s.index!.favCount, 2);
   // Each entry carries the CRC of the ROM file it points at.
   s.roms.forEach((rom, i) => assert.equal(s.crcs[i], crc32(fs.readFileSync(path.join(CARD, rom)))));
+  // Flags bit 1 marks every entry of a favorite, at the top and under its letter.
+  s.crcs.forEach((crc, i) => assert.equal((s.flags[i] & 2) !== 0, fav.includes(crc), s.titles[i]));
+  assert.equal(s.crcs.filter((c) => fav.includes(c)).length, 4);
+  // A favorite's second entry is a full copy: same path structs and art.
+  const buf = fs.readFileSync(file);
+  const top = s.titles.indexOf('Game C1');
+  const again = s.titles.lastIndexOf('Game C1');
+  assert.notEqual(top, again);
+  const art = (i: number) => buf.subarray(528 + 42 * 128 + i * 65536, 528 + 42 * 128 + (i + 1) * 65536);
+  const paths = (i: number) => buf.subarray(528 + 42 * (128 + 65536) + i * 768, 528 + 42 * (128 + 65536) + (i + 1) * 768);
+  assert.ok(art(top).equals(art(again)));
+  assert.ok(paths(top).equals(paths(again)));
+  assert.ok(buf.subarray(528 + top * 128, 528 + top * 128 + 128).equals(buf.subarray(528 + again * 128, 528 + again * 128 + 128)));
+  // The core finds favorites.cfg at paths0 + (count * 3 + 1) * 256, right after the log path.
+  const paths0 = 528 + 42 * (128 + 65536);
+  const struct = (k: number) => buf.toString('utf8', paths0 + k * 256, paths0 + (k + 1) * 256).replace(/\0+$/, '');
+  assert.equal(struct(42 * 3), '/Saves/gbc/common/picker.log');
+  assert.equal(struct(42 * 3 + 1), '/Saves/gbc/common/favorites.cfg');
+  assert.equal(buf.length, paths0 + (42 * 3 + 2) * 256);
   assert.ok(!fs.existsSync(path.join(ROMDIR, '.covers.bin.part')));
 });
 
@@ -131,6 +152,10 @@ test('back to a 31 game core: v6, cut to 31, same order', async () => {
   assert.equal(s.version, 6);
   assert.equal(s.count, 31);
   assert.deepEqual(s.titles, plan.pack.titles);
+  // v6 has no favorites.cfg path and no duplicates: it ends with the log path.
+  const buf = fs.readFileSync(path.join(ROMDIR, 'covers.bin'));
+  assert.equal(buf.toString('utf8', buf.length - 256).replace(/\0+$/, ''), '/Saves/gbc/common/picker.log');
+  assert.equal(new Set(s.crcs.length ? s.crcs : s.roms).size, 31);
 });
 
 test('old covers.bin: not copied when the app wrote it, copied and capped when it did not', async () => {
@@ -150,7 +175,7 @@ test('old covers.bin: not copied when the app wrote it, copied and capped when i
   assert.equal(fs.readFileSync(path.join(BACKUP_DIR, kept.sort().at(-1)!), 'utf8'), `not ours ${BACKUPS_KEPT + 1}`);
 });
 
-test('v7 index on a synced card: favorites counted, # first, missing letters 0xFFFF, starts ascending', async () => {
+test('v7 index on a synced card: favorites counted, listed again under their letter, # first, missing letters 0xFFFF', async () => {
   const lib2 = path.join(OUT, 'library-index');
   const card2 = path.join(OUT, 'card-index');
   const stems = ['1942', '3D Pocket', 'alleyway', 'Asteroids', 'Balloon Kid', 'Tetris', 'Tetris DX', 'The Legend of Zelda', 'Wario Land', 'Zelda'];
@@ -162,7 +187,10 @@ test('v7 index on a synced card: favorites counted, # first, missing letters 0xF
   updateChoices({ [crcOf('Tetris')]: { favorite: true }, [crcOf('Zelda')]: { favorite: true } });
 
   const { plan } = await makePlan({ library: lib2, card: card2 });
-  assert.deepEqual(plan.pack.titles, ['Tetris', 'Zelda', '1942', '3D Pocket', 'alleyway', 'Asteroids', 'Balloon Kid', 'Tetris DX', 'The Legend of Zelda', 'Wario Land']);
+  assert.deepEqual(plan.pack.titles, [
+    'Tetris', 'Zelda',
+    '1942', '3D Pocket', 'alleyway', 'Asteroids', 'Balloon Kid', 'Tetris', 'Tetris DX', 'The Legend of Zelda', 'Wario Land', 'Zelda',
+  ]);
   await runSync({ library: lib2, card: card2, signature: plan.signature });
   const s = readPackSummary(fs.readFileSync(path.join(card2, 'Assets', 'gbc', 'common', 'covers.bin')))!;
   assert.deepEqual(s.titles, plan.pack.titles);
@@ -173,9 +201,9 @@ test('v7 index on a synced card: favorites counted, # first, missing letters 0xF
   assert.equal(at('#'), 2);
   assert.equal(at('A'), 4);
   assert.equal(at('B'), 6);
-  assert.equal(at('T'), 7);
-  assert.equal(at('W'), 9);
-  assert.equal(at('Z'), 0xffff); // Zelda is only in the favorites
+  assert.equal(at('T'), 7); // Tetris again, under T
+  assert.equal(at('W'), 10);
+  assert.equal(at('Z'), 11); // Zelda is a favorite, and is also under Z
   for (const l of 'CDEFGHIJKLMNOPQRSUVXY') assert.equal(at(l), 0xffff, l);
   const present = idx.starts.filter((x) => x !== 0xffff);
   assert.deepEqual(present, [...present].sort((a, b) => a - b));
