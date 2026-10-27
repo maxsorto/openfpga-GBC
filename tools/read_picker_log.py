@@ -7,6 +7,7 @@ tag (S, D or Q), time in units of 4096 cycles of the 74.25 MHz clock, and 32 bit
   S  state change: new state, previous state, last data slot error, open error, game index
   D  diagnostic bits changed (the same bits as the squares along the top of the menu)
   Q  SDRAM sample: the pixel fetched for screen (160, 100) and the low 16 bits of its row base address
+  C  the cartridge slot message from the Pocket (APF 0x00B1 payload) changed
 
 Usage: read_picker_log.py picker.log [cover_picker.sv]
 """
@@ -55,6 +56,8 @@ def main():
             print(f"{t:10.2f} ms  S  {st(old)} -> {st(new)}  game {idx}  slot_err {terr} open_err {oerr}")
         elif tag == "D":
             print(f"{t:10.2f} ms  D  {lo & 0xFFFFFF:06x}  [{bits(lo)}]")
+        elif tag == "C":
+            print(f"{t:10.2f} ms  C  cartridge slot (APF 0x00B1): {lo:08x}  play_cartridge={lo >> 24 & 1}")
         elif tag == "Q":
             print(f"{t:10.2f} ms  Q  row base ..{lo >> 16:04x}  pixel {lo & 0xFFFF:04x}")
         else:
