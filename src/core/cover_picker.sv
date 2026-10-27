@@ -1,5 +1,10 @@
 // Cover picker: a cover-flow game menu inside the GBC core.
 //
+// Library size: up to 2047 games. Covers stream from the pack into an SDRAM cache of 128 slots (game g lives in slot
+// g mod 128) as you scroll: the selected game first, then its neighbors, then four ahead in the scroll direction.
+// A cover that has not arrived yet draws as a dark tile. Each game's entry (title, flags, size) is read from the
+// card when it is selected. Pack v7 stores covers at a 64 KB stride; v6 packs (45568 B stride) still load.
+//
 // Reads covers.bin (format v4, see tools/make_cover_pack.py) from data slot COVER_SLOT with core-initiated data
 // slot reads, shows the selected cover (64x64) between previews of the previous and next game (40x40, dimmed) with
 // floor reflections, a proportional title (marquee when long), the platform under it, and page dots. Left/Right
@@ -13,7 +18,8 @@
 //   0 header + entries   1 center palette (0x000..0x1FF) + center indices   2 preview palette
 //   3 left preview       4 right preview
 module cover_picker #(
-    parameter MAX_ENTRIES = 31,
+    parameter MAX_ENTRIES = 2047,
+    parameter CB = 7,                // cover cache: 2^CB slots of 64 KB in SDRAM (7: 128 slots, 8 MB)
     parameter DEBUG_SQUARES = 0,     // 1 draws the diagnostic squares along the top of the menu (see README)
     parameter COVER_SLOT  = 16'd100,
     parameter CART_SLOT   = 16'd101,
@@ -74,7 +80,12 @@ module cover_picker #(
     output wire        sd_own,           // clk_sys: menu owns the SDRAM read port
     output reg  [23:0] sd_addr = 0,
     output reg         sd_oe = 0,
+    output reg         sd_we = 0,
+    output reg  [15:0] sd_wd = 0,
     input  wire [15:0] sd_q,
+    input  wire        art_wr,           // clk_sys: one cover art word from the cart loader (while art_load)
+    input  wire [23:0] art_waddr,        // SDRAM word address
+    input  wire [15:0] art_wdata,
     input  wire [15:0] dbg,              // clk_sys: diagnostic bits from core_top, drawn as squares at the top left
     output reg         art_load = 0,     // clk_74a: cover art is streaming into SDRAM through the cart loader
     output wire        hr_mode,          // clk_vid: video comes from the hi-res menu (scaler slot 2)
@@ -90,8 +101,9 @@ module cover_picker #(
 );
 
 localparam CW = 128, TW = 80;                          // art sizes in the pack (RGB565)
-localparam [31:0] BLOB_BYTES = 2 * (CW * CW + TW * TW); // 45568
+localparam [31:0] BLOB_BYTES = 2 * (CW * CW + TW * TW); // 45568: the bytes of one cover that are read
 localparam [31:0] ENT_OFF    = 528;
+localparam [15:0] PLACEHOLDER = 16'h2124;              // RGB565 tile drawn where a cover has not arrived yet
 localparam [31:0] ART_BRIDGE = 32'h10800000;           // cart loader, byte 8 MB = SDRAM word 0x400000
 localparam [23:0] ART_WORD   = 24'h400000;             // 64 KB (32K words) per game
 
@@ -193,7 +205,8 @@ localparam [6:0]
     S_PREAD = 41, S_PREAD_W = 42, S_PFLAGS = 43, S_PSIZE = 44, S_POPEN = 45, S_POPEN_W = 46, S_XFER_W = 47,
     S_L1 = 49, S_SETTLE = 50, S_L3 = 52, S_L4 = 53, S_L5 = 54, S_L6 = 55, S_L7 = 56, S_L8 = 57, S_L9 = 58,
     S_L10 = 59, S_L11 = 60, S_LRUN = 61, S_LFAIL = 62, S_PAUSE = 63, S_H0 = 64, S_H1 = 65, S_H2 = 66, S_H3 = 67,
-    S_H4 = 68, S_H5 = 69, S_H6 = 70, S_PROBE1 = 71, S_PROBE2 = 72, S_LOAD2 = 73, S_ART0 = 74, S_ART_W = 75, S_ART_RT = 76, S_LG2 = 77;
+    S_H4 = 68, S_H5 = 69, S_H6 = 70, S_PROBE1 = 71, S_PROBE2 = 72, S_LOAD2 = 73, S_AF0 = 74, S_AF1 = 75, S_AF2 = 76, S_LG2 = 77,
+    S_HDR_C = 78, S_LOADE = 79, S_LOADK = 80, S_AFRT = 81, S_HDR_D = 82, S_HDR_E = 83, S_HDR_F = 84, S_AF0W = 85;
 localparam [1:0] PK_ROM = 0, PK_SAV = 1, PK_SUS = 2;
 localparam [12:0] LOG_BYTES = 13'd4096;   // debug log file size
 
@@ -206,7 +219,7 @@ reg  [27:0] tmr = 0;
 reg  [27:0] mt = 0;                // time idle in the menu (log flush after 3 s)
 reg         plog = 0, lflush_req = 0; // path struct = the log file's; a log flush is due
 reg  [31:0] sv = 0, ssz = 0;       // latched save / state sizes of the running game
-reg  [31:0] susp = 0, known = 0;   // per game: has a suspend file / probed
+reg         cur_susp = 0, cur_known = 0;   // the selected game: has a suspend file / probed (cache: ks_ram)
 reg         lerr = 0;              // last launch failed: show the error on line 2
 reg  [7:0]  ecode = 0; reg [2:0] enum_ = 0;
 reg         ovl = 0, psel = 0;     // pause overlay, selected option (0 Resume, 1 Home)
@@ -217,7 +230,9 @@ reg         anim = 0, adir = 0;    // cover flow step in progress; adir 0: moved
 reg  [3:0]  af = 0;                // animation frame
 reg  [3:0]  tlevel = 0;            // title fade, separate from the whole-menu fade
 reg  [26:0] boot_timer = 0;
-reg  [4:0]  count = 0, idx = 0;
+reg  [11:0] clr = 0;               // boot: table clear counter
+reg  [10:0] count = 0, idx = 0;
+reg  [15:0] pver = 0;              // pack format version
 reg  [31:0] rom_size = 0;
 reg  [6:0]  copy_i = 0;
 reg  [15:0] lo_word = 0;
@@ -230,22 +245,113 @@ reg  [9:0]  mp = 0;
 reg  [7:0]  title_w = 0;
 reg  [8:0]  htw = 0, hsw = 0;      // hi-res title / platform widths
 reg         lf = 0;                // layout pass for the hi-res font
-reg  [4:0]  ag = 0;                // art loading: game index
-reg  [2:0]  art_try = 0;           // art loading: retries left for this game
+reg  [10:0] af_g = 0;              // art loader: game being fetched
+reg  [6:0]  af_ret = 0;            // art loader: state to return to
+reg  [1:0]  art_try = 0;           // art loader: retries left for this game
+reg         pend_l = 0, pend_r = 0, pend_a = 0;   // presses that arrived while the loader was busy
 reg         dbg_art_err = 0, dbg_art_done = 0;   // diagnostics: a refused art read; the art stream finished
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
 wire        done_rise = target_dataslot_done & ~done_1;
 
-wire [10:0] ebase = 11'd8 + {idx, 6'd0};
-wire [4:0]  prev = (idx == 0) ? count - 1'b1 : idx - 1'b1;
-wire [4:0]  next = (idx == count - 1'b1) ? 5'd0 : idx + 1'b1;
-wire [31:0] blob0 = ENT_OFF + {20'd0, count, 7'd0};
-function [31:0] blob(input [4:0] i); blob = blob0 + i * BLOB_BYTES; endfunction
-wire [31:0] paths0 = blob0 + count * BLOB_BYTES;
-wire [7:0]  pslot   = plog ? {2'b0, count, 1'b0} + {3'd0, count}            // after every game's: the log path
-                           : {1'b0, idx, 1'b0} + {3'd0, idx} + {6'd0, pk};   // idx*3 + kind
-wire [31:0] pstruct = paths0 + {16'd0, pslot, 8'd0};
+wire [10:0] ebase = 11'd8;          // the selected game's entry is read to word 8 (after the 16 byte header)
+wire [10:0] prev = (idx == 0) ? count - 1'b1 : idx - 1'b1;
+wire [10:0] next = (idx == count - 1'b1) ? 11'd0 : idx + 1'b1;
+// pack layout, computed once after the header is read (registered: these feed 32-bit offsets)
+reg  [31:0] stride = 0;            // v7 pads every cover to 64 KB, v6 packs them at 45568 B
+reg  [31:0] blob0 = 0, paths0 = 0, lay_t = 0;
+reg  [31:0] art_mul = 0, art_off = 0;   // offset of af_g's cover, two cycles behind af_g
+always @(posedge clk_74a) begin art_mul <= af_g * stride; art_off <= blob0 + art_mul; end
+wire [12:0] pslot   = plog ? {1'b0, count, 1'b0} + {2'd0, count}            // after every game's: the log path
+                           : {1'b0, idx, 1'b0} + {2'd0, idx} + {11'd0, pk};  // idx*3 + kind
+wire [31:0] pstruct = paths0 + {11'd0, pslot, 8'd0};
+
+// per game: suspend file known / present (bit 0 probed, bit 1 present), read at the selected game
+reg         ks_we = 0; reg [1:0] ks_wd = 0; reg [10:0] ks_wa = 0;
+wire [1:0]  ks_q;
+picker_dpram #(.WIDTH(2), .ADDR(11)) ks_ram (
+    .wclk(clk_74a), .we(ks_we), .waddr(ks_wa), .wdata(ks_wd),
+    .rclk(clk_74a), .raddr(idx), .q(ks_q));
+
+// ---------------------------------------------------------------- cover cache (clk_74a)
+// tag per SDRAM slot (game g lives in slot g mod 2^CB): {valid, game}. One read port, shared round robin: phases 0..3 look up the four visible covers,
+// phases 4..7 test prefetch candidates in priority order.
+reg         tag_we = 0; reg [CB-1:0] tag_wa = 0; reg [11:0] tag_wd = 0;
+reg  [CB-1:0] tag_ra = 0;
+wire [11:0] tag_q;
+picker_dpram #(.WIDTH(12), .ADDR(CB)) tag_ram (
+    .wclk(clk_74a), .we(tag_we), .waddr(tag_wa), .wdata(tag_wd),
+    .rclk(clk_74a), .raddr(tag_ra), .q(tag_q));
+reg  [10:0] cg [0:3];              // games of the four visible covers (cover flow block below)
+reg         cl [0:3];              // their art is in the cache
+reg  [2:0]  tph = 0, tph_1 = 0, tph_2 = 0;
+reg  [3:0]  cand = 0, cand_1 = 0, cand_2 = 0;    // prefetch candidate number
+reg  [10:0] tg_1 = 0, tg_2 = 0;    // game whose tag is being read
+reg         need_v = 0; reg [10:0] need_g = 0;   // the highest priority missing cover
+reg         sweep_hit = 0; reg [10:0] sweep_g = 0;
+reg         need_clr = 0, sweep_bad = 0;   // a load just finished: drop need and the sweep that saw the old tag
+                                   // (need_v is stale on the clock need_clr is high, so the FSM checks both)
+// candidate offsets: 0, +1, -1, +2, -2, then 4 ahead in the scroll direction, then 2 behind
+function signed [4:0] cand_off(input [3:0] c, input dir_left);
+    reg signed [4:0] o;
+    begin
+        case (c)
+        0: o = 0; 1: o = 1; 2: o = -1; 3: o = 2; 4: o = -2; 5: o = 3; 6: o = 4; 7: o = 5; 8: o = 6;
+        9: o = -3; default: o = -4;
+        endcase
+        cand_off = (dir_left && c >= 5) ? -o : o;
+    end
+endfunction
+reg last_left = 0;                 // direction of the last step, for prefetch
+// the candidates' games (idx + offset, wrapped around the library), recomputed one at a time whenever the selection,
+// the direction or the count changes: one add, then one wrap per cycle until in range (several for tiny libraries)
+reg  [10:0] cgame [0:10];
+reg  [3:0]  cj = 0; reg cph = 0; reg signed [12:0] cgv = 0;
+reg  [10:0] c_idx = 11'h7FF, c_cnt = 0; reg c_left = 0;
+reg         c_valid = 0;           // every candidate matches the current selection (one full pass since the change)
+always @(posedge clk_74a) begin
+    if (idx != c_idx || count != c_cnt || last_left != c_left) begin
+        c_idx <= idx; c_cnt <= count; c_left <= last_left; cj <= 0; cph <= 0; c_valid <= 0;
+    end else if (count != 0) begin
+        if (!cph) begin cgv <= $signed({2'b0, idx}) + cand_off(cj, last_left); cph <= 1; end
+        else if (cgv < 0) cgv <= cgv + $signed({2'b0, count});
+        else if (cgv >= $signed({2'b0, count})) cgv <= cgv - $signed({2'b0, count});
+        else begin
+            cgame[cj] <= cgv[10:0]; cph <= 0;
+            cj <= (cj == 4'd10) ? 4'd0 : cj + 1'b1;
+            if (cj == 4'd10) c_valid <= 1;
+        end
+    end
+end
+wire [10:0] tg_now = (tph < 4) ? cg[tph[1:0]] : cgame[cand];
+// a published miss is usable only for the selection it was computed for
+wire        need_ok = need_v && !need_clr && c_valid && idx == c_idx && count == c_cnt && last_left == c_left;
+always @(posedge clk_74a) begin
+    tph <= tph + 1'b1;
+    tag_ra <= tg_now[CB-1:0];
+    tph_1 <= tph; tg_1 <= tg_now; cand_1 <= cand;
+    tph_2 <= tph_1; tg_2 <= tg_1; cand_2 <= cand_1;
+    if (tph >= 4) cand <= (cand == 4'd10) ? 4'd0 : cand + 1'b1;
+    // tag_q holds the tag read two cycles ago (address registered, then the RAM's own register)
+    if (tph_2 < 4) cl[tph_2[1:0]] <= tag_q[11] && tag_q[10:0] == tg_2;
+    else if (count != 0) begin : sweep
+        reg miss, keep; integer oj;
+        // the slot's current game may only be evicted by a nearer candidate: if it is itself a candidate of equal or
+        // higher priority (or on screen), leave it, so two games that share a slot never take turns evicting each other
+        keep = tag_q[11] && (tag_q[10:0] == cg[0] || tag_q[10:0] == cg[1] || tag_q[10:0] == cg[2] || tag_q[10:0] == cg[3]);
+        for (oj = 0; oj < 11; oj = oj + 1)
+            if (oj <= cand_2 && tag_q[11] && tag_q[10:0] == cgame[oj]) keep = 1;
+        miss = !(tag_q[11] && tag_q[10:0] == tg_2) && !keep;
+        if (cand_2 == 0) begin                       // candidate 0 closes the last sweep and opens the next
+            if (!sweep_bad) begin need_v <= sweep_hit; need_g <= sweep_g; end
+            sweep_bad <= 0;
+            sweep_hit <= miss; sweep_g <= tg_2;      // never evict a visible cover; first miss wins
+        end else if (miss && !sweep_hit) begin
+            sweep_hit <= 1; sweep_g <= tg_2;
+        end
+    end
+    if (need_clr || !c_valid) begin need_v <= 0; sweep_hit <= 0; sweep_bad <= 1; end   // stale: start over
+end
 
 // platform line, character j
 // mode 0 Game Boy Color, 1 Game Boy, 2 suspended, 3 launch error
@@ -261,7 +367,7 @@ function [7:0] plat_char(input [1:0] m, input [7:0] ec, input [2:0] en, input [5
         plat_char = (j < n) ? s[111 - j * 8 -: 8] : 8'd0;
     end
 endfunction
-wire [1:0] pmode = lerr ? 2'd3 : susp[idx] ? 2'd2 : is_gb ? 2'd1 : 2'd0;
+wire [1:0] pmode = lerr ? 2'd3 : cur_susp ? 2'd2 : is_gb ? 2'd1 : 2'd0;
 
 always @(posedge clk_74a) begin
     done_1                   <= target_dataslot_done;
@@ -273,6 +379,13 @@ always @(posedge clk_74a) begin
     map_we                   <= 0;
     map2_we                  <= 0;
     ago                      <= 0;
+    ks_we                    <= 0;
+    tag_we                   <= 0;
+    need_clr                 <= 0;
+    ks_wa                    <= idx;
+    if (step_l) pend_l <= 1;
+    if (step_r) pend_r <= 1;
+    if (press_a) pend_a <= 1;
 
     if (state == S_MENU && cont1_key[15:0] == 0) begin if (mt != 28'd250_000_000) mt <= mt + 1'b1; end else mt <= 0;
 
@@ -280,9 +393,16 @@ always @(posedge clk_74a) begin
     S_BOOT: begin
         // hold the Game Boy explicitly: the power-up value of hold_gb is not reliable on hardware (seen low in build 14)
         menu_active <= 0; picker_download <= 0; game_loaded <= 0; idx <= 0; level_target <= 0; hold_gb <= 1;
+        art_load <= 0;
+        // clear the per-game suspend table and the cover cache tags (power-up contents are not trusted)
+        if (clr != 12'd2048) begin
+            ks_we <= 1; ks_wa <= clr[10:0]; ks_wd <= 2'b00;
+            if (clr < (12'd1 << CB)) begin tag_we <= 1; tag_wa <= clr[CB-1:0]; tag_wd <= 12'd0; end
+            clr <= clr + 1'b1;
+        end
         if (!core_ready) boot_timer <= 0;
         else if (boot_timer != 27'd37_000_000) boot_timer <= boot_timer + 1'b1;
-        else state <= enable ? S_HDR_REQ : S_OFF;
+        else if (clr == 12'd2048) state <= enable ? S_HDR_REQ : S_OFF;
     end
 
     S_HDR_REQ: begin
@@ -292,53 +412,73 @@ always @(posedge clk_74a) begin
     end
     S_HDR_WAIT: if (done_rise) begin
         if (target_dataslot_err != 0) state <= S_OFF;
-        else begin ent_raddr <= 11'd3; state <= S_HDR_A; end
+        else begin ent_raddr <= 11'd2; state <= S_HDR_A; end
     end
-    S_HDR_A: state <= S_HDR_B;
-    S_HDR_B: begin
-        count <= (ent_q == 0) ? 5'd0 : (ent_q > MAX_ENTRIES ? MAX_ENTRIES[4:0] : ent_q[4:0]);
-        state <= (ent_q == 0) ? S_OFF : S_ENT_REQ;
+    S_HDR_A: begin ent_raddr <= 11'd3; state <= S_HDR_B; end
+    S_HDR_B: begin pver <= ent_q; state <= S_HDR_C; end
+    S_HDR_C: begin
+        count <= (ent_q == 0) ? 11'd0 : (ent_q > MAX_ENTRIES ? MAX_ENTRIES[10:0] : ent_q[10:0]);
+        state <= (ent_q == 0) ? S_OFF : S_HDR_D;
     end
-    S_ENT_REQ: begin
-        target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= ENT_OFF;
-        target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd16; target_dataslot_length <= {20'd0, count, 7'd0};
-        target_dataslot_read <= 1; state <= S_ENT_WAIT;
+    S_HDR_D: begin stride <= (pver >= 16'd7) ? 32'd65536 : BLOB_BYTES; blob0 <= ENT_OFF + {14'd0, count, 7'd0}; state <= S_HDR_E; end
+    S_HDR_E: begin lay_t <= count * stride; state <= S_HDR_F; end
+    S_HDR_F: begin paths0 <= blob0 + lay_t; state <= S_LOAD; end
+
+    // ---- cover loader: fetch need_g into its cache slot, then return to af_ret
+    S_AF0: begin
+        af_g <= need_g; art_load <= 1; tmr <= 0;
+        tag_we <= 1; tag_wa <= need_g[CB-1:0]; tag_wd <= {1'b0, need_g};      // slot invalid while it is rewritten
+        state <= S_AF0W;
     end
-    S_ENT_WAIT: if (done_rise) begin
-        if (target_dataslot_err != 0) state <= S_OFF; else begin ag <= 0; tmr <= 0; art_try <= 3'd7; state <= S_ART0; end
-    end
-    // ---- stream every game's art into SDRAM (once, at boot)
-    S_ART0: if (ag == count) begin
-                tmr <= tmr + 1'b1;
-                if (tmr == 28'd7400) begin art_load <= 0; dbg_art_done <= 1; state <= S_LOAD; end   // let the last writes drain
-            end else begin
-                art_load <= 1;
-                target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= blob(ag);
-                target_dataslot_bridgeaddr <= ART_BRIDGE + {11'd0, ag, 16'd0}; target_dataslot_length <= BLOB_BYTES;
-                target_dataslot_read <= 1; state <= S_ART_W;
-            end
-    S_ART_W: if (done_rise) begin
-        if (target_dataslot_err != 0) dbg_art_err <= 1;
-        if (target_dataslot_err != 0 && art_try != 0) begin art_try <= art_try - 1'b1; tmr <= 0; state <= S_ART_RT; end
-        else begin ag <= ag + 1'b1; art_try <= 3'd7; state <= S_ART0; end
-    end
-    S_ART_RT: begin                                  // the host refused the read: wait 20 ms and ask again
+    S_AF0W: begin                                    // art_off settles two cycles after af_g
         tmr <= tmr + 1'b1;
-        if (tmr == 28'd1_480_000) begin tmr <= 0; state <= S_ART0; end
+        if (tmr == 28'd3) begin
+            target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= art_off;
+            target_dataslot_bridgeaddr <= ART_BRIDGE + ({21'd0, af_g} % (32'd1 << CB) << 16); target_dataslot_length <= BLOB_BYTES;
+            target_dataslot_read <= 1; state <= S_AF1;
+        end
+    end
+    S_AF1: if (done_rise) begin
+        tmr <= 0;
+        if (target_dataslot_err != 0) begin
+            dbg_art_err <= 1;
+            if (art_try != 0) begin art_try <= art_try - 1'b1; state <= S_AFRT; end
+            else begin art_try <= 2'd3; state <= S_AF2; end    // give up: show what arrived rather than retry forever
+        end else begin art_try <= 2'd3; state <= S_AF2; end
+    end
+    S_AF2: begin                                     // let the last words drain into SDRAM, then mark the slot valid
+        tmr <= tmr + 1'b1;
+        if (tmr == 28'd4000) begin
+            art_load <= 0; dbg_art_done <= 1;
+            tag_we <= 1; tag_wa <= af_g[CB-1:0]; tag_wd <= {1'b1, af_g}; need_clr <= 1;
+            state <= af_ret;
+        end
+    end
+    S_AFRT: begin                                    // the host refused the read: wait 20 ms and ask again
+        tmr <= tmr + 1'b1;
+        if (tmr == 28'd1_480_000) begin art_load <= 0; need_clr <= 1; state <= af_ret; end
     end
 
-    // ---- load the selection: lay out the title and platform, then pull the three images
+    // ---- load the selection: read its entry, probe its suspend file once, lay out the title and platform
     S_LOAD: begin
-        if (!known[idx]) begin pk <= PK_SUS; pflags <= 0; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_PROBE1; state <= S_PREAD; end
+        target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= ENT_OFF + {14'd0, idx, 7'd0};
+        target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd16; target_dataslot_length <= 32'd128;
+        target_dataslot_read <= 1; state <= S_LOADE;
+    end
+    S_LOADE: if (done_rise) state <= S_LOADK;       // ks_q follows idx; it is long valid by now
+    S_LOADK: begin
+        cur_known <= ks_q[0]; cur_susp <= ks_q[1];
+        ent_raddr <= ebase + 11'd20;                // flags word, read by the layout as it starts (S_MAP_FETCH)
+        if (!ks_q[0]) begin pk <= PK_SUS; pflags <= 0; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_PROBE1; state <= S_PREAD; end
         else state <= S_LOAD2;
     end
-    S_PROBE1: if (oerr != 0) begin known[idx] <= 1; susp[idx] <= 0; state <= S_LOAD2; end
+    S_PROBE1: if (oerr != 0) begin cur_known <= 1; cur_susp <= 0; ks_we <= 1; ks_wd <= 2'b01; state <= S_LOAD2; end
               else begin
                   target_dataslot_id <= SUS_SLOT; target_dataslot_slotoffset <= 0;
                   target_dataslot_bridgeaddr <= PARAM_ADDR + 32'h190; target_dataslot_length <= 32'd4;
                   target_dataslot_read <= 1; op_ret <= S_PROBE2; state <= S_XFER_W;
               end
-    S_PROBE2: begin known[idx] <= 1; susp[idx] <= (xerr == 0); state <= S_LOAD2; end
+    S_PROBE2: begin cur_known <= 1; cur_susp <= (xerr == 0); ks_we <= 1; ks_wd <= {xerr == 0, 1'b1}; state <= S_LOAD2; end
     S_LOAD2: begin
         k <= 0; line2 <= 0; lf <= 1; mp <= 10'd0; state <= S_MAP_FETCH;
         ent_raddr <= ebase + 11'd20; // flags byte (byte 40) for the platform line
@@ -375,18 +515,22 @@ always @(posedge clk_74a) begin
         else begin
             title_w <= (mp[7:0] == 0) ? 8'd0 : mp[7:0] - 1'b1;   // drop the trailing gap
             if (!menu_active) lflush_req <= 1;          // fresh menu (boot or Home): write the log once it is idle
+            if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; end   // presses from before the menu showed
             gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; state <= S_MENU;
         end
     end
 
     S_MENU: begin
         if (!menu_active) begin gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; end
-        if (!anim && step_r && count > 1)      begin idx <= next; lerr <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE; end
-        else if (!anim && step_l && count > 1) begin idx <= prev; lerr <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE; end
-        else if (press_a)             begin level_target <= 0; state <= S_LAUNCH_FADE; end
+        if (!anim && pend_r && count > 1) begin
+            pend_r <= 0; idx <= next; last_left <= 0; lerr <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE;
+        end else if (!anim && pend_l && count > 1) begin
+            pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
+        end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
         else if (lflush_req && mt == 28'd222_000_000) begin   // 3 s idle: write the debug log to its file
             lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
-        end
+        end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
+        if (count <= 1) begin pend_l <= 0; pend_r <= 0; end
     end
     S_LG2: begin
         plog <= 0;
@@ -397,7 +541,8 @@ always @(posedge clk_74a) begin
             target_dataslot_write <= 1; op_ret <= S_MENU; state <= S_XFER_W;
         end
     end
-    S_FADE: if (tlevel == 0) begin ent_raddr <= ebase + 11'd20; state <= S_LOAD; end   // title faded out: relayout
+    S_FADE: if (tlevel == 0) state <= S_LOAD;      // title faded out: read the new entry and relayout
+            else if (need_ok) begin af_ret <= S_FADE; state <= S_AF0; end   // use the fade to fetch covers
 
     // ---- subroutine: read path struct pk of game idx into the 0x0192 struct, set flags/size, open it into op_slot
     S_PREAD: begin
@@ -457,7 +602,7 @@ always @(posedge clk_74a) begin
     S_L7: begin                                      // game running behind the menu backdrop; resume point?
         tmr <= tmr + 1'b1;
         if (tmr == 28'd11_000_000) begin
-            if (susp[idx]) begin pk <= PK_SUS; pflags <= 0; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_L8; state <= S_PREAD; end
+            if (cur_susp) begin pk <= PK_SUS; pflags <= 0; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_L8; state <= S_PREAD; end
             else state <= S_LRUN;
         end
     end
@@ -476,7 +621,7 @@ always @(posedge clk_74a) begin
             pk <= PK_SUS; pflags <= 32'd2; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_L11; state <= S_PREAD;
         end
     end
-    S_L11: begin susp[idx] <= 0; state <= S_LRUN; end
+    S_L11: begin cur_susp <= 0; ks_we <= 1; ks_wd <= 2'b01; state <= S_LRUN; end
     S_LRUN: begin menu_active <= 0; game_loaded <= 1; state <= S_RUN; end
     S_LFAIL: begin picker_download <= 0; hold_gb <= 1; lerr <= 1; ent_raddr <= ebase + 11'd20; state <= S_LOAD2; end
 
@@ -513,8 +658,8 @@ always @(posedge clk_74a) begin
     end
     S_H6: if (xerr != 0) begin ecode <= "V"; enum_ <= xerr; pmsg <= 2'd2; state <= S_PAUSE; end
           else begin
-              susp[idx] <= 1; known[idx] <= 1; ovl <= 0; pmsg <= 0; pause_gb <= 0; hold_gb <= 1;
-              game_loaded <= 0; level_target <= 0; ent_raddr <= ebase + 11'd20; state <= S_LOAD;
+              cur_susp <= 1; cur_known <= 1; ks_we <= 1; ks_wd <= 2'b11; ovl <= 0; pmsg <= 0; pause_gb <= 0; hold_gb <= 1;
+              game_loaded <= 0; level_target <= 0; state <= S_LOAD;
           end
     S_OFF: begin menu_active <= 0; hold_gb <= 0; end
     default: state <= S_BOOT;
@@ -555,11 +700,11 @@ initial for (si = 0; si < 256; si = si + 1) step_lut[si] = (si == 0) ? 10'd256 :
 
 wire [8:0] e_now = anim ? ease(af) : 9'd256;
 // cover k (0..3, left to right) parameters
-reg  signed [10:0] cx [0:3]; reg [7:0] cs [0:3]; reg [4:0] cb [0:3]; reg [4:0] cg [0:3]; reg cv [0:3];
+reg  signed [10:0] cx [0:3]; reg [7:0] cs [0:3]; reg [4:0] cb [0:3]; reg cv [0:3];
 integer ki;
 always @(posedge clk_74a) begin   // registered: these cross into clk_vid
     for (ki = 0; ki < 4; ki = ki + 1) begin : covers
-        reg signed [2:0] fs, ts; reg signed [6:0] gi; reg signed [11:0] dx; reg signed [9:0] ds, dbb; reg [4:0] bt;
+        reg signed [2:0] fs, ts; reg signed [11:0] dx; reg signed [9:0] ds, dbb; reg [4:0] bt;
         reg signed [22:0] px, ps, pb;     // full-width products (the sum's width would otherwise truncate them)
         // final slots: moving right -> -2,-1,0,1 ; moving left -> -1,0,1,2 ; at rest -> -1,0,1 (k = 3 unused)
         ts = (anim && !adir) ? ki - 2 : ki - 1;
@@ -574,21 +719,38 @@ always @(posedge clk_74a) begin   // registered: these cross into clk_vid
         cx[ki] <= slot_x(fs) + (px >>> 8);
         cs[ki] <= $signed({1'b0, slot_s(fs)}) + (ps >>> 8);
         cb[ki] <= (bt > 5'd16) ? 5'd16 : bt;
-        gi = $signed({2'b0, idx}) + ts;
-        if (gi < 0) gi = gi + $signed({2'b0, count});
-        if (gi < 0) gi = gi + $signed({2'b0, count});
-        if (gi >= $signed({2'b0, count})) gi = gi - $signed({2'b0, count});
-        if (gi >= $signed({2'b0, count})) gi = gi - $signed({2'b0, count});
-        cg[ki] <= gi[4:0];
+        // idx + ts, wrapped: candidates 0..4 are offsets 0, +1, -1, +2, -2
+        case (ts) 3'sd0: cg[ki] <= cgame[0]; 3'sd1: cg[ki] <= cgame[1]; -3'sd1: cg[ki] <= cgame[2];
+                  3'sd2: cg[ki] <= cgame[3]; default: cg[ki] <= cgame[4]; endcase
         cv[ki] <= (count > 1 || ts == 0) && (anim || ki != 3) && bt != 0;
     end
 end
 
+// position bar thumb: idx * 120 / (count - 1), by restoring division over 18 cycles whenever idx changes
+reg  [6:0]  pos_bar = 0;
+reg  [17:0] dv_num = 0, dv_q = 0; reg [10:0] dv_rem = 0, dv_den = 0; reg [4:0] dv_n = 0; reg [10:0] dv_idx = 11'h7FF;
+always @(posedge clk_74a) begin
+    if (dv_n == 0) begin
+        if (idx != dv_idx && count > 1) begin
+            dv_idx <= idx; dv_num <= {idx, 7'd0} - {4'd0, idx, 3'd0};   // idx * 120
+            dv_den <= count - 1'b1; dv_rem <= 0; dv_q <= 0; dv_n <= 5'd18;
+        end
+    end else begin : dstep
+        reg [11:0] r;
+        r = {dv_rem, dv_num[17]};
+        dv_num <= {dv_num[16:0], 1'b0};
+        if (r >= {1'b0, dv_den}) begin dv_rem <= r - {1'b0, dv_den}; dv_q <= {dv_q[16:0], 1'b1}; end
+        else begin dv_rem <= r[10:0]; dv_q <= {dv_q[16:0], 1'b0}; end
+        dv_n <= dv_n - 1'b1;
+        if (dv_n == 1) pos_bar <= (r >= {1'b0, dv_den}) ? {dv_q[5:0], 1'b1} : {dv_q[5:0], 1'b0};
+    end
+end
+
 // ================================================================== video (clk_vid)
-reg [1:0] menu_s = 0; reg [3:0] lvl_s = 0, tl_s = 0; reg [4:0] idx_s = 0, cnt_s = 0;
+reg [1:0] menu_s = 0; reg [3:0] lvl_s = 0, tl_s = 0; reg [10:0] idx_s = 0, cnt_s = 0; reg [6:0] pos_s = 0;
 reg [7:0] tw_s = 0; reg [8:0] htw_s = 0, hsw_s = 0; reg [2:0] gen_s = 0;
 always @(posedge clk_vid) begin
-    menu_s <= {menu_s[0], menu_active}; lvl_s <= level; tl_s <= tlevel; idx_s <= idx; cnt_s <= count;
+    menu_s <= {menu_s[0], menu_active}; lvl_s <= level; tl_s <= tlevel; idx_s <= idx; cnt_s <= count; pos_s <= pos_bar;
     tw_s <= title_w; htw_s <= htw; hsw_s <= hsw; gen_s <= {gen_s[1:0], gen};
 end
 wire menu_v = menu_s[1];
@@ -710,10 +872,10 @@ wire [8:0] x = hc - HOFF, y = vc - VOFF;
 always @(posedge clk_vid) vs_any <= menu_v ? (vc < 9'd2) : vs;
 
 // cover parameters for this frame, latched in the vertical blank (they change right after the frame tick)
-reg signed [10:0] vx [0:3]; reg [7:0] vs_ [0:3]; reg [4:0] vb [0:3], vg [0:3]; reg vv [0:3];
+reg signed [10:0] vx [0:3]; reg [7:0] vs_ [0:3]; reg [4:0] vb [0:3]; reg [CB-1:0] vg [0:3]; reg vv [0:3], vl [0:3];
 integer vk;
 always @(posedge clk_vid) if (vc == 9'd3 && hc == 0)
-    for (vk = 0; vk < 4; vk = vk + 1) begin vx[vk] <= cx[vk]; vs_[vk] <= cs[vk]; vb[vk] <= cb[vk]; vg[vk] <= cg[vk]; vv[vk] <= cv[vk]; end
+    for (vk = 0; vk < 4; vk = vk + 1) begin vx[vk] <= cx[vk]; vs_[vk] <= cs[vk]; vb[vk] <= cb[vk]; vg[vk] <= cg[vk][CB-1:0]; vv[vk] <= cv[vk]; vl[vk] <= cl[vk]; end
 
 // line requests to the SDRAM fetcher: at the start of each line, fetch the next one
 reg       lreq_t = 0; reg [8:0] lreq_y = 0;
@@ -769,13 +931,17 @@ wire       ht2_ok = ht2_row && x >= ht2_st && ht2x < hsw_s;
 assign map2_ra = ht2_row ? {1'b1, ht2x} : {1'b0, ht1x[8:0]};
 wire [3:0] htrow = ht2_row ? y - HT2Y : y - HT1Y;
 
-// page dots: 8 px pitch, 4x4 dots, the current one an 8x4 pill
-wire [8:0] hd_st = 9'd160 - {cnt_s, 2'b0};
+// position: page dots (8 px pitch, 4x4 dots, the current one an 8x4 pill) up to 32 games, beyond that a 128 px
+// track with an 8 px thumb
+wire       hd_bar = cnt_s > 11'd32;
+wire [8:0] hd_st = hd_bar ? 9'd96 : 9'd160 - {cnt_s[5:0], 2'b0};
 wire [8:0] hdx = x - hd_st;
-wire       hd_row = y >= HDY && y < HDY + 4 && x >= hd_st && hdx < {cnt_s, 3'b0};
-wire       hd_cur = hd_row && hdx[8:3] == idx_s;
-wire       hd_dim = hd_row && !hd_cur && hdx[2:0] >= 3'd2 && hdx[2:0] < 3'd6;
-wire       hd_rnd = hd_row && (hdx[2:0] == 0 || hdx[2:0] == 7) && (y == HDY || y == HDY + 3);   // pill corners
+wire       hd_row = y >= HDY && y < HDY + 4 && x >= hd_st && hdx < (hd_bar ? 9'd128 : {cnt_s[5:0], 3'b0});
+wire [8:0] hd_thx = hdx - {2'b0, pos_s};
+wire       hd_cur = hd_row && (hd_bar ? (hdx >= {2'b0, pos_s} && hd_thx < 9'd8) : hdx[8:3] == idx_s[5:0]);
+wire       hd_dim = hd_row && !hd_cur && (hd_bar ? (y == HDY + 1 || y == HDY + 2) : (hdx[2:0] >= 3'd2 && hdx[2:0] < 3'd6));
+wire [2:0] hd_px  = hd_bar ? hd_thx[2:0] : hdx[2:0];
+wire       hd_rnd = hd_row && (hd_px == 0 || hd_px == 7) && (y == HDY || y == HDY + 3);   // pill corners
 
 // background: solid black
 wire [7:0] hbg_r = 8'd0, hbg_g = 8'd0, hbg_b = 8'd0;
@@ -859,15 +1025,26 @@ endfunction
 // ---------------------------------------------------------------- SDRAM line fetcher (clk_sys)
 // One read per SDRAM cycle (sd_ce, ~8.4 MHz). The address is set, and the previous read's data captured, two
 // clk_sys cycles after each sd_ce, safely inside the window where the controller's dout holds that read.
+// The menu owns the SDRAM whenever the Game Boy is held, except while its own ROM download runs. Art words wait in a
+// FIFO and are written in the SDRAM cycles the line fetcher leaves free.
 reg [2:0] own_s = 0;
-always @(posedge clk_sys) own_s <= {own_s[1:0], menu_active & hold_gb & ~art_load & ~picker_download};
+always @(posedge clk_sys) own_s <= {own_s[1:0], hold_gb & ~picker_download};
 assign sd_own = own_s[2];
+reg  [8:0]  ff_wp = 0, ff_rp = 0, ff_wp1 = 0, ff_wp2 = 0;
+wire        ff_empty = ff_wp2 == ff_rp;    // compare with the write pointer two clocks late: the RAM read is registered
+wire [39:0] ff_q;
+picker_dpram #(.WIDTH(40), .ADDR(8)) art_fifo (
+    .wclk(clk_sys), .we(art_wr), .waddr(ff_wp[7:0]), .wdata({art_waddr, art_wdata}),
+    .rclk(clk_sys), .raddr(ff_rp[7:0]), .q(ff_q));
+always @(posedge clk_sys) begin if (art_wr) ff_wp <= ff_wp + 1'b1; ff_wp1 <= ff_wp; ff_wp2 <= ff_wp1; end
+reg [2:0] ffe_s = 0;
+always @(posedge clk_74a) ffe_s <= {ffe_s[1:0], ff_empty};
 reg [2:0] lq_s = 0; reg [8:0] fy = 0;
 reg [1:0] ce_d = 0;
 always @(posedge clk_sys) begin lq_s <= {lq_s[1:0], lreq_t}; ce_d <= {ce_d[0], sd_ce}; end
 wire tick = ce_d[1];
 // frame parameters for the fetcher, latched when line 0 is requested
-reg signed [10:0] fx [0:3]; reg [7:0] fs_ [0:3]; reg [4:0] fg [0:3]; reg fv [0:3];
+reg signed [10:0] fx [0:3]; reg [7:0] fs_ [0:3]; reg [CB-1:0] fg [0:3]; reg fv [0:3], fl [0:3];
 reg [1:0]  fk = 0;          // cover being fetched
 reg [2:0]  fst = 0;         // 0 idle, 1 setup, 2 setup2, 3 run, 4 drain
 reg [8:0]  fxc = 0, fxe = 0;  // current / end screen x
@@ -878,9 +1055,10 @@ reg        fpend = 0, fpend2 = 0; reg [8:0] fpx = 0, fpx2 = 0;   // reads in fli
 integer fi2;
 always @(posedge clk_sys) begin
     lb_we <= 0;
+    if (tick) sd_we <= 0;                           // a write lasts one SDRAM cycle
     if (lq_s[2] != lq_s[1]) begin
         fy <= lreq_y; fk <= 0; fst <= 3'd1; fpend <= 0; fpend2 <= 0;
-        if (lreq_y == 0) for (fi2 = 0; fi2 < 4; fi2 = fi2 + 1) begin fx[fi2] <= vx[fi2]; fs_[fi2] <= vs_[fi2]; fg[fi2] <= vg[fi2]; fv[fi2] <= vv[fi2]; end
+        if (lreq_y == 0) for (fi2 = 0; fi2 < 4; fi2 = fi2 + 1) begin fx[fi2] <= vx[fi2]; fs_[fi2] <= vs_[fi2]; fg[fi2] <= vg[fi2]; fv[fi2] <= vv[fi2]; fl[fi2] <= vl[fi2]; end
     end else case (fst)
     3'd1: begin : setup
         reg signed [11:0] ly, xs, xe; reg [7:0] S, r, row; reg [17:0] rowf;
@@ -894,7 +1072,7 @@ always @(posedge clk_sys) begin
             row   = (ly < $signed({4'b0, S})) ? ly[7:0] : S - 1'b1 - (ly[7:0] - S);   // reflection mirrors
             fstep <= step_lut[S];
             rowf  = row * step_lut[S];
-            fbase <= ART_WORD + {4'd0, fg[fk], 15'd0} + ((S <= 80) ? 24'd16384 + rowf[15:8] * 24'd80 : {9'd0, rowf[15:8], 7'd0});
+            fbase <= ART_WORD + ({{(24-CB){1'b0}}, fg[fk]} << 15) + ((S <= 80) ? 24'd16384 + rowf[15:8] * 24'd80 : {9'd0, rowf[15:8], 7'd0});
             facc  <= (xs - fx[fk]) * step_lut[S];
             fxc <= xs[8:0]; fxe <= xe[8:0];
             fst <= 3'd3;
@@ -904,20 +1082,27 @@ always @(posedge clk_sys) begin
         // the address set at tick t is sampled at the next SDRAM sync and its data is captured at tick t + 2
         if (fpend2) begin lb_we <= 1; lb_wa <= {fy[0], fpx2}; lb_wd <= sd_q; end
         fpend2 <= fpend; fpx2 <= fpx;
-        if (fxc < fxe) begin
+        if (fxc < fxe && fl[fk]) begin
             sd_addr <= fbase + facc[17:8]; sd_oe <= 1; fpend <= 1; fpx <= fxc;
             fxc <= fxc + 1'b1; facc <= facc + fstep;
         end else begin
             fpend <= 0;
-            if (!fpend && !fpend2) begin            // drained
+            if (fxc < fxe) begin                    // cover not in the cache yet: a flat tile, and the cycle is free
+                lb_we <= 1; lb_wa <= {fy[0], fxc}; lb_wd <= PLACEHOLDER; fxc <= fxc + 1'b1;
+            end else if (!fpend && !fpend2) begin   // drained
                 if (fk == 3) fst <= 3'd4; else begin fk <= fk + 1'b1; fst <= 3'd1; end
             end
+            if (!ff_empty) begin sd_we <= 1; sd_oe <= 0; sd_addr <= ff_q[39:16]; sd_wd <= ff_q[15:0]; ff_rp <= ff_rp + 1'b1; end
         end
     end
     3'd4: begin sd_oe <= 0; fst <= 3'd0; end
     default: ;
     endcase
-    if (!sd_own) sd_oe <= 0;
+    // free SDRAM cycles outside a fetch run go to the art FIFO
+    if (tick && sd_own && fst != 3'd3 && !(lq_s[2] != lq_s[1]) && !ff_empty) begin
+        sd_we <= 1; sd_oe <= 0; sd_addr <= ff_q[39:16]; sd_wd <= ff_q[15:0]; ff_rp <= ff_rp + 1'b1;
+    end
+    if (!sd_own) begin sd_oe <= 0; sd_we <= 0; end
     if (lb_we && fy == 9'd100 && lb_wa[8:0] == 9'd160) q_samp <= {fbase[15:0], lb_wd};   // center cover, row 100
     dcnt <= dcnt + 1'b1;
     dacc <= dacc | {lb_we, fst == 3'd3, lq_s[2] != lq_s[1], tick};
@@ -956,7 +1141,7 @@ always @(posedge clk_74a) begin
     lg_we <= 0;
     if (state != lg_st) begin
         lg_st <= state; lg_we <= 1;
-        lg_wd <= {"S", lg_time[35:12], 1'b0, state, 1'b0, lg_st, target_dataslot_err, oerr, xerr, 2'd0, idx};
+        lg_wd <= {"S", lg_time[35:12], state, lg_st, target_dataslot_err, oerr, 1'b0, idx};
     end else if (dbg_a != lg_dbg) begin
         lg_dbg <= dbg_a; lg_we <= 1;
         lg_wd <= {"D", lg_time[35:12], 8'd0, dbg_a};

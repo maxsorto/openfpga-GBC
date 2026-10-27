@@ -341,7 +341,8 @@ wire    [31:0]  target_dataslot_length;
 
 wire            picker_hold_gb;             // cover picker: Game Boy held in reset
 // cover picker hi-res menu: SDRAM read port (clk_sys), art loading, video
-wire            picker_sd_own, picker_sd_oe, picker_art_load;
+wire            picker_sd_own, picker_sd_oe, picker_sd_we, picker_art_load;
+wire     [15:0] picker_sd_wd;
 reg      [15:0] picker_dbg = 0;            // cover picker diagnostics (see the end of this file)
 wire    [23:0]  picker_sd_addr;
 wire            picker_hr_mode, picker_hr_de, picker_hr_hs, picker_hr_vs;
@@ -741,28 +742,21 @@ wire [5:0] cart_phi_high_m1 = speed ? 6'd11 : 6'd23;
 wire cart_phi_fall = cart_physical_mode && (cart_phi_counter == cart_phi_high_m1);
 wire cart_phi_rise = cart_physical_mode && (cart_phi_counter == cart_phi_period_m1);
 
-// cover art: streamed through the cart loader (bridge 0x108xxxxx) into SDRAM words 0x400000+, above any ROM, with
-// its own write strobe so the cart logic never sees it; read back by the menu while the Game Boy is held in reset
+// cover art: streamed through the cart loader (bridge 0x108xxxxx). While the menu is loading art, each loader word
+// goes to the menu's FIFO instead of the cart logic, and the menu writes it into SDRAM words 0x400000+ (above any
+// ROM) in the cycles its line fetcher leaves free. The menu owns the SDRAM whenever the Game Boy is held, except
+// during its own ROM download, so a download flag the host leaves raised at power-on can't steer its accesses.
 reg  [2:0] art_load_s = 0;
-reg        art_wait = 0, art_write = 0;
-always_ff @(posedge clk_sys) begin
-  art_load_s <= {art_load_s[1:0], picker_art_load};
-  if (ioctl_wr & art_load_s[2]) art_wait <= 1;
-  if (ce_cpu2x) begin
-    art_write <= art_wait;
-    if (art_write) {art_wait, art_write} <= 0;
-  end
-end
+always_ff @(posedge clk_sys) art_load_s <= {art_load_s[1:0], picker_art_load};
 wire        art_dl       =  art_load_s[2];
-// the menu's reads come first while it owns the SDRAM (it lets go during its own ROM and art downloads), so a
-// download flag the host leaves raised at power-on can never steer its reads elsewhere
-wire  [1:0] sdram_ds     = (cart_download | art_dl | picker_sd_own) ? 2'b11 : {mbc_addr[0], ~mbc_addr[0]};
+wire        picker_art_wr = ioctl_wr & art_dl;
+wire  [1:0] sdram_ds     = (cart_download | picker_sd_own) ? 2'b11 : {mbc_addr[0], ~mbc_addr[0]};
 wire [15:0] sdram_do;
-wire [15:0] sdram_di     = (cart_download | art_dl) ? ioctl_dout : 16'd0;
+wire [15:0] sdram_di     = picker_sd_own ? picker_sd_wd : cart_download ? ioctl_dout : 16'd0;
 wire [23:0] sdram_addr   = picker_sd_own ? picker_sd_addr :
-                           (cart_download | art_dl) ? ioctl_addr[24:1] : {2'b00, mbc_addr[22:1]};
-wire sdram_oe            =  picker_sd_own ? picker_sd_oe : (~cart_download & ~art_dl & cart_rd & ~cram_rd);
-wire sdram_we            = ~picker_sd_own & ((cart_download & dn_write) | (art_dl & art_write));
+                           cart_download ? ioctl_addr[24:1] : {2'b00, mbc_addr[22:1]};
+wire sdram_oe            =  picker_sd_own ? picker_sd_oe : (~cart_download & cart_rd & ~cram_rd);
+wire sdram_we            =  picker_sd_own ? picker_sd_we : (cart_download & dn_write & ~art_dl);
 wire sdram_refresh_force;
 wire sdram_autorefresh   = !ff_on;
 
@@ -1333,7 +1327,12 @@ cover_picker cover_picker (
   .sd_own                     ( picker_sd_own              ),
   .sd_addr                    ( picker_sd_addr             ),
   .sd_oe                      ( picker_sd_oe               ),
+  .sd_we                      ( picker_sd_we               ),
+  .sd_wd                      ( picker_sd_wd               ),
   .sd_q                       ( sdram_do                   ),
+  .art_wr                     ( picker_art_wr              ),
+  .art_waddr                  ( ioctl_addr[24:1]           ),
+  .art_wdata                  ( ioctl_dout                 ),
   .dbg                        ( picker_dbg                 ),
   .art_load                   ( picker_art_load            ),
   .hr_mode                    ( picker_hr_mode             ),
@@ -1500,7 +1499,7 @@ end
 reg [21:0] dbg_cnt = 0; reg [15:0] dbg_acc = 0; reg dbg_artwr = 0;
 always_ff @(posedge clk_sys) begin
   dbg_cnt <= dbg_cnt + 1'b1;
-  if (art_dl & art_write & ce_cpu2x) dbg_artwr <= 1;
+  if (picker_art_wr) dbg_artwr <= 1;
   dbg_acc <= dbg_acc | {boot_download, dbg_artwr, picker_hold_s[1], sleep_savestate,
                         sdram_we, loading_done, reset, ff_on,
                         paused, ioctl_download, art_dl, cart_download,

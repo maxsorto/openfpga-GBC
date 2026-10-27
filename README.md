@@ -1,25 +1,25 @@
-<p align="center"><img src="docs/images/hero.png" alt="Cover flow menu, pause panel and a suspended game" width="100%"></p>
+<p align="center"><img src="docs/images/hero.png" alt="The cover flow menu on the Pocket next to the companion app's library" width="100%"></p>
 
 # Cover Flow for the Analogue Pocket
 
-A box-art game menu that lives inside the Game Boy Color core on the Analogue Pocket. Turn the core on and you land on your library as covers: the selected game in the middle, its neighbors dimmed on each side, reflections on the floor and the title underneath. Press A and the game boots with its battery save loaded. Press L in game to pause, then Resume, or go Home to the covers with the game suspended. Pick it again later and it comes back on the exact frame you left.
+A box-art game menu that lives inside the Game Boy Color core on the Analogue Pocket, and a Mac app that fills it. Turn the core on and you land on your library as full-color covers at 320x288: the selected game in the middle, its neighbors either side, reflections on the floor and the title underneath. Left and Right glide between games. Press A and the game boots with its battery save loaded. Press L in game to pause, then Resume, or go Home to the covers with the game suspended. Pick it again later and it comes back on the exact frame you left. On the Mac, the companion app names every ROM in your library by checksum, finds its box art, and syncs it all to the SD card.
 
-<p align="center"><b>Get it: <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">the cover-picker branch</a></b><br>Analogue Pocket, openFPGA. Game Boy and Game Boy Color games.</p>
+<p align="center"><b>Get it: <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">the cover-picker branch</a></b><br>Analogue Pocket, openFPGA. Game Boy and Game Boy Color games.<br><b>Fill it: <a href="companion/">the companion app</a></b> (in <code>companion/</code>), runs on your Mac in the browser.</p>
 
-This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gameboy core. The emulation is theirs. The menu, saves and suspend are new. No ROMs, BIOS files or box art are in this repo.
+This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gameboy core. The emulation is theirs. The menu, saves, suspend and the companion app are new. No ROMs, BIOS files or box art are in this repo.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/menu-crystal.png" alt="Pokemon Crystal selected in the cover flow"></td>
-    <td width="50%"><img src="docs/images/menu-mario.png" alt="Super Mario Bros. Deluxe selected"></td>
+    <td width="50%"><img src="docs/images/menu-1.png" alt="Cover flow at 320x288 with a game selected"></td>
+    <td width="50%"><img src="docs/images/menu-2.png" alt="Cover flow, another game selected"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/menu-slide.png" alt="Covers gliding mid-step"></td>
+    <td><img src="docs/images/menu-3.png" alt="Cover flow, a Game Boy game selected"></td>
   </tr>
   <tr>
     <td><img src="docs/images/pause-resume.png" alt="Pause panel over the dimmed game, Resume selected"></td>
     <td><img src="docs/images/pause-home.png" alt="Pause panel, Home selected"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/menu-suspended.png" alt="A suspended game in the menu"></td>
-    <td><img src="docs/images/menu-yellow.png" alt="Pokemon Yellow selected"></td>
   </tr>
 </table>
 
@@ -27,7 +27,7 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 
 | | |
 |---|---|
-| Browse | Left and Right move through the library. Hold to scroll. Long titles scroll as a marquee. |
+| Browse | Left and Right glide the covers over 8 frames with an ease-out. Hold to scroll. Long titles scroll as a marquee. |
 | Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. |
 | Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. |
 | Home | Writes the battery save, writes a save state to a `.sus` file next to it, and goes back to the covers. |
@@ -36,10 +36,46 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 
 R is still fast forward. Select is left alone because games use it.
 
+## The companion app
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/companion-library.png" alt="Library view: 702 games with box art, matched by checksum"></td>
+    <td width="50%"><img src="docs/images/companion-pocket.png" alt="Pocket view: favorites first, then everything else A to Z"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/companion-picker.png" alt="Cover picker with alternative box art"></td>
+    <td><img src="docs/images/companion-sync.png" alt="Sync plan with each save matched to its ROM"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/companion-gbc.png" alt="Game Boy Color theme, Atomic Purple shell over the board"></td>
+    <td><img src="docs/images/companion-gbc-teal.png" alt="Game Boy Color theme, Teal shell"></td>
+  </tr>
+</table>
+
+A local web app: a Node backend that reads your ROM folder and the SD card, and a React page in your browser. It lives in [`companion/`](companion/).
+
+| | |
+|---|---|
+| Library | Point it at one folder. Every ROM is named by CRC32 against the No-Intro database, and duplicates merge. |
+| Box art | Found in libretro-thumbnails automatically. Click a cover to pick another, search, or drop in your own image. |
+| Favorites | Star games in the app. The Pocket shows them first, then everything else A to Z. |
+| Sync | A plan shows what will be copied, removed and kept, and checks free space first. ROMs are copied, checked by CRC, then renamed into place. The app only removes ROMs it placed, and it never touches saves. |
+| Your card | ROMs already on the card are adopted under their current names, so their saves keep working. A card ROM with the same name as a library game but different contents is kept, because its save is tied to that name. |
+| Themes | DMG, and Game Boy Color with six shells. Atomic Purple shows the board through the plastic. |
+
+The app reads the core version on the card. With the streaming core it writes every game (up to 2047) to the pack; with an older core it writes the first 31 of the sync order.
+
+```sh
+cd companion
+npm install
+npm start          # opens http://localhost:4390
+```
+
 ## Using it
 
 1. Copy the `Cores/maxsorto.GBC` folder from a build to the card, next to the original core.
-2. Make a cover pack on a computer and copy it to `/Assets/gbc/common/covers.bin`.
+2. Open the companion app, pick your ROM folder and the card, and sync. It writes the ROMs and `/Assets/gbc/common/covers.bin`. (`tools/make_cover_pack.py` makes the pack from the command line too.)
 3. Open the core. The menu appears after about a second. It can be turned off in Core Settings, Cover Menu.
 
 Controls in the menu: Left and Right to browse, A to play. In game: L to pause, Up and Down to choose, A to confirm.
@@ -48,13 +84,14 @@ Controls in the menu: Left and Right to browse, A to play. In game: L to pause, 
 
 <p align="center"><img src="docs/images/pipeline.svg" alt="Pipeline from box art to a running game" width="100%"></p>
 
-- **The pack.** `tools/make_cover_pack.py` fits each cover on a blurred copy of itself, quantizes it to 256 colors (64x64 for the center, 40x40 for the previews), and writes titles, ROM sizes and the ROM, save and suspend paths into one file.
-- **Pulling data.** The core reads the pack itself with APF target command 0x0180, a few kilobytes per selection, because the FPGA has only 13 spare block RAMs.
+- **The pack.** The companion app (or `tools/make_cover_pack.py`) fits each cover on a blurred copy of itself and stores it in 16-bit color: a 128x128 center and an 80x80 preview. Titles, ROM sizes, and the ROM, save and suspend paths go in the same file.
+- **Streaming covers.** The Pocket's SDRAM holds 128 covers above the cartridge ROM area, as a cache: game g lives in slot g mod 128. A background loader reads the covers nearest the selection from the card with APF target command 0x0180 (the selected game first, then its neighbors, then four ahead in the scroll direction), about 29 ms each. A cover may only evict a slot whose game is further from the selection, so nearby games never take turns evicting each other. Each game's title and flags are read from the card when it is selected. A library can have up to 2047 games.
+- **Sharing SDRAM.** Cover words wait in a 256-entry FIFO and are written in the SDRAM cycles the line fetcher leaves free, so the menu keeps drawing while covers load. A cover that has not arrived yet draws as a dark tile.
+- **Video.** The menu has its own 320x288 timing on its own scaler mode. A line fetcher reads each cover from SDRAM two lines ahead, scaled on the fly, so covers can grow, shrink and slide every frame. The title uses Inter at 13 px with antialiasing. The game switches back to the Game Boy's 160x144 when it launches.
 - **Opening files.** Paths are copied from the pack straight into the 0x0192 parameter struct. The struct answers bridge reads one transaction late, which is how every APF bridge device behaves. Getting that wrong returns "malformed path".
 - **Saves.** The core reports the save size in its data table. The menu opens the matching `.sav` into the Save slot, reads it into cartridge RAM, and creates it at that size if it does not exist yet.
 - **Suspend.** Home triggers the core's own save state machinery, the same one the Pocket's save states use, and streams it into the game's `.sus` file with 0x0184. Resume streams it back and signals a load.
-- **Video.** The menu draws into the Game Boy's 160x144 frame at 6.7 MHz in three pipeline stages. The pause panel is drawn over the frozen game frame, which is dimmed to about 3/8 brightness.
-- **Testing.** Icarus Verilog testbenches play the Pocket's side: a fake card that serves opens, reads and writes. `tools/sim/tb_suspend.sv` runs launch, pause, Home and resume end to end. The screenshots here are frames from that simulation.
+- **Testing.** Icarus Verilog testbenches play the Pocket's side: a fake card that serves opens, reads and writes, and a model of the SDRAM. `tools/sim/tb_suspend.sv` runs launch, pause, Home and resume end to end. `tools/sim/tb_stream.sv` holds Right through a library bigger than a deliberately tiny 8-slot cache and checks every visible cover word for word against the pack. The menu screenshots here are frames from that simulation.
 
 ## Debugging on hardware
 
@@ -95,30 +132,18 @@ A full compile takes about ten minutes. `ap_core.qsf` limits Quartus to one work
 ## What's done and what's next
 
 Done:
-- Cover flow menu with previews, reflections, marquee titles and page dots
+- Cover flow menu at 320x288 with full-color covers, reflections, eased animation, marquee titles and page dots
 - Launching from the menu, battery saves in the usual place
 - Pause panel on L with Resume and Home, and a chime
 - Suspend to a save state and resume on the exact frame
+- An on-card debug log and diagnostic squares for hardware bugs
+- The companion app: library by checksum, automatic box art, favorites, a sync plan that protects saves, two themes
+- Streaming covers for libraries up to 2047 games (pack v7), verified in simulation; first hardware test next
 
 Next:
-- A sharper menu at 320x288, scaled 5x to the Pocket's screen
-- Full-color covers kept in the unused PSRAM chips, for instant scrolling
-- Show which games have a resume point before they are first selected
-
-## How long it took
-
-Built in one Claude Code session with Claude Opus 5.5, measured from the transcript.
-
-| | |
-|---|---|
-| Start | 2026-10-25 17:21 EDT |
-| Latest build | 2026-10-25 23:51 EDT |
-| Wall clock | 6 h 30 min |
-| Messages from Max | 56 |
-| Assistant turns | 808 |
-| Output tokens | 980,000 |
-| Cache reads | 474 million tokens |
-| Hardware builds | 11 |
+- Play history on the Pocket (a `launcher.cfg` the core writes), so recently played games come first and favorites sync both ways
+- A grid view next to cover flow, and a settings screen
+- The app reads play history back from the card
 
 ## Repository layout
 
@@ -126,6 +151,7 @@ Built in one Claude Code session with Claude Opus 5.5, measured from the transcr
 - `src/core/core_top.sv`: wiring into the GBC core (bridge, data slots, save states, video and audio mix)
 - `src/core/picker_dpram.v`: block RAM wrapper used by the menu
 - `pkg/gbc/Cores/budude2.GBC/data.json`: data slots, including Cover Pack (100), Game (101) and Suspend (102)
+- `companion/`: the Mac companion app (Hono backend in `server/`, React UI in `web/`)
 - `tools/`: pack builder, box art fetcher, bitstream reverser, packaging script, debug log reader
 - `tools/sim/`: Icarus testbenches with a fake Pocket host
 - `docs/images/`: README images

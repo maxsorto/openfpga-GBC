@@ -51,7 +51,7 @@
           "bin"
         ],
         "address": "0x30000000",
-        "size_maximum": "0x400000"
+        "size_maximum": "0x8800000"
       },
       {
         "id": 101,

@@ -22,12 +22,12 @@
   </g>
   <g font-size="13" fill="#e6e9f2" text-anchor="middle">
     <text x="125" y="82">box art</text><text x="125" y="102" fill="#8a93ad" font-size="11">libretro-thumbnails</text>
-    <text x="375" y="82">make_cover_pack.py</text><text x="375" y="102" fill="#8a93ad" font-size="11">fit, palette, paths</text>
-    <text x="625" y="82">covers.bin</text><text x="625" y="102" fill="#8a93ad" font-size="11">pack v5, 57 KB for 8 games</text>
+    <text x="375" y="82">companion app</text><text x="375" y="102" fill="#8a93ad" font-size="11">CRC match, fit, sync</text>
+    <text x="625" y="82">covers.bin</text><text x="625" y="102" fill="#8a93ad" font-size="11">45 KB per game, 16-bit</text>
     <text x="375" y="236">Assets/gbc/common</text><text x="375" y="254" fill="#8a93ad" font-size="11">ROMs + covers.bin</text>
     <text x="625" y="236">Saves/gbc/common</text><text x="625" y="254" fill="#8a93ad" font-size="11">.sav  .sus</text>
     <text x="845" y="236">Cores/maxsorto.GBC</text><text x="845" y="254" fill="#8a93ad" font-size="11">bitstream + json</text>
-    <text x="130" y="343">cover flow</text><text x="130" y="362" fill="#8a93ad" font-size="11">64x64 cover, 40x40</text><text x="130" y="378" fill="#8a93ad" font-size="11">previews, 5x7 font</text>
+    <text x="130" y="343">cover flow</text><text x="130" y="362" fill="#8a93ad" font-size="11">320x288, 128 px cover</text><text x="130" y="378" fill="#8a93ad" font-size="11">art read from SDRAM</text>
     <text x="375" y="343">launch</text><text x="375" y="362" fill="#8a93ad" font-size="11">0x0192 open, 0x0180 pull</text><text x="375" y="378" fill="#8a93ad" font-size="11">ROM, .sav, save state</text>
     <text x="625" y="343">Game Boy Color</text><text x="625" y="362" fill="#8a93ad" font-size="11">budude2 / MiSTer core</text><text x="625" y="378" fill="#8a93ad" font-size="11">runs the game</text>
     <text x="845" y="343">L: pause</text><text x="845" y="362" fill="#8a93ad" font-size="11">Home writes .sav and</text><text x="845" y="378" fill="#8a93ad" font-size="11">a save state (.sus)</text>

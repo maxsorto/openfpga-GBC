@@ -1,0 +1,16 @@
+
+# Never commit game data: ROMs, BIOS, saves, save states, cover packs or SD card dumps
+*.gb
+*.gbc
+*.sgb
+*.sav
+*.srm
+*.sus
+*.iso
+covers.bin
+covers*.hex
+*bios*.bin
+sgb_boot.bin
+
+# simulation pack images
+tools/sim/*.hex
