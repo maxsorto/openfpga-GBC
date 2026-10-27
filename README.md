@@ -29,6 +29,8 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 |---|---|
 | Browse | Left and Right glide the covers over 8 frames with an ease-out. Hold to scroll. Long titles scroll as a marquee. |
 | Jump | Up and Down jump to the previous and next letter (and to your favorites at the top). The letter shows under the title. |
+| Favorites | Select switches between all games and only your favorites. |
+| Options | X opens the selected game's options: Play, Start over (drops a suspend point and boots fresh), favorite on or off, Back. Favorites changed on the Pocket go to `favorites.cfg` and the companion app applies them on the next sync. |
 | Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. |
 | Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. |
 | Home | Writes the battery save, writes a save state to a `.sus` file next to it, and goes back to the covers. |
@@ -79,7 +81,7 @@ npm start          # opens http://localhost:4390
 2. Open the companion app, pick your ROM folder and the card, and sync. It writes the ROMs and `/Assets/gbc/common/covers.bin`. (`tools/make_cover_pack.py` makes the pack from the command line too.)
 3. Open the core. The menu appears after about a second. It can be turned off in Core Settings, Cover Menu.
 
-Controls in the menu: Left and Right to browse, Up and Down to jump by letter, A to play. In game: L to pause, Up and Down to choose, A to confirm.
+Controls in the menu: Left and Right to browse, Up and Down to jump by letter, Select for all games or favorites, X for a game's options, A to play. In game: L to pause, Up and Down to choose, A to confirm.
 
 ## How it works
 

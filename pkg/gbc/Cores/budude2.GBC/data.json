@@ -83,6 +83,16 @@
         "extensions": [
           "log"
         ]
+      },
+      {
+        "id": 104,
+        "name": "Favorites",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "cfg"
+        ]
       }
     ]
   }

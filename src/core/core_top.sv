@@ -321,6 +321,7 @@ wire            savestate_load_err;
 
 wire            osnotify_inmenu;
 wire            osnotify_adapter_play;
+wire     [31:0] osnotify_adapter_raw;
 
 // bridge target commands
 // synchronous to clk_74a
@@ -416,6 +417,7 @@ core_bridge_cmd icb (
 
   .osnotify_inmenu            ( osnotify_inmenu            ),
   .osnotify_adapter_play      ( osnotify_adapter_play      ),
+  .osnotify_adapter_raw       ( osnotify_adapter_raw       ),
   
   .target_dataslot_read       ( target_dataslot_read       ),
   .target_dataslot_write      ( target_dataslot_write      ),
@@ -1334,6 +1336,7 @@ cover_picker cover_picker (
   .art_waddr                  ( ioctl_addr[24:1]           ),
   .art_wdata                  ( ioctl_dout                 ),
   .dbg                        ( picker_dbg                 ),
+  .cart_notify                ( osnotify_adapter_raw       ),
   .art_load                   ( picker_art_load            ),
   .hr_mode                    ( picker_hr_mode             ),
   .hr_de                      ( picker_hr_de               ),
