@@ -33,6 +33,12 @@ export interface PackEntry {
    * letter index. Left out, an entry is in the A to Z list.
    */
   section?: MenuSection;
+  /**
+   * Cartridge fingerprint, read from the ROM file: bytes 0x14E, 0x14F (global
+   * checksum), 0x14D (header checksum), 0x143 (CGB flag). Zeros for a ROM shorter
+   * than 0x150 bytes. v7 stores one per entry so Play Cartridge can find the cover.
+   */
+  fingerprint?: Buffer;
 }
 
 export type MenuSection = 'played' | 'favorite' | 'az';
@@ -135,6 +141,9 @@ export interface PackFormat {
   reserved?(games: PackEntry[]): Buffer;
   /** Path structs after the picker.log one, for files the core opens by name. */
   trailer?(platform: string): string[];
+  /** Bytes after the last path struct, and what goes there. `start` is its file offset. */
+  tailBytes?(count: number): number;
+  tail?(games: PackEntry[], start: number): Buffer;
   /** A last chance to fix the order, for formats that rely on it. Returns the games to write, in order. */
   arrange?<T extends PackEntry>(games: T[]): T[];
 }
@@ -145,9 +154,19 @@ export interface PackBuildOptions {
   onProgress?: (done: number) => void;
 }
 
-export function packSize(fmt: PackFormat, count: number): number {
+/** File offset of the first path struct. */
+export function pathsStart(fmt: PackFormat, count: number): number {
+  return HEADER_BYTES + RESERVED_BYTES + count * (ENTRY_BYTES + fmt.stride);
+}
+
+/** File offset just after the last path struct (the log one and any trailer ones). */
+export function tailStart(fmt: PackFormat, count: number): number {
   const trailer = fmt.trailer?.('gbc').length ?? 0;
-  return HEADER_BYTES + RESERVED_BYTES + count * (ENTRY_BYTES + fmt.stride + 3 * PATH_STRUCT_BYTES) + (1 + trailer) * PATH_STRUCT_BYTES;
+  return pathsStart(fmt, count) + (count * 3 + 1 + trailer) * PATH_STRUCT_BYTES;
+}
+
+export function packSize(fmt: PackFormat, count: number): number {
+  return tailStart(fmt, count) + (fmt.tailBytes?.(count) ?? 0);
 }
 
 function checkGames(fmt: PackFormat, games: PackEntry[]): void {
@@ -203,6 +222,7 @@ export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBu
     opts.onProgress?.(i + 1);
   });
   parts.push(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
+  if (fmt.tail) parts.push(fmt.tail(games, tailStart(fmt, games.length)));
   return Buffer.concat(parts);
 }
 
@@ -230,6 +250,7 @@ export async function writePackWith(
     opts.onProgress?.(i + 1);
   }
   await put(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
+  if (fmt.tail) await put(fmt.tail(games, tailStart(fmt, games.length)));
   if (written !== packSize(fmt, games.length)) throw new Error('Pack came out the wrong size');
   return written;
 }
@@ -272,6 +293,8 @@ export interface PackSummary {
   flags: number[];
   /** v7 only, when the reserved area starts with "IDX1". */
   index: PackIndex | null;
+  /** v7 only: where the cartridge fingerprint table is ("FPR1" at file offset 80). */
+  fingerprints: { offset: number; count: number } | null;
 }
 
 /** Read the header and entries back from the start of a pack, for display and checks. */
@@ -296,7 +319,11 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   if (version >= 7 && buf.length >= 24 + 27 * 2 && buf.toString('ascii', 16, 20) === 'IDX1') {
     index = { favCount: buf.readUInt16LE(20), playedCount: buf.readUInt16LE(22), starts: Array.from({ length: 27 }, (_, i) => buf.readUInt16LE(24 + i * 2)) };
   }
-  return { version, count, titles, roms, crcs, flags, index };
+  let fingerprints: PackSummary['fingerprints'] = null;
+  if (version >= 7 && buf.length >= 92 && buf.toString('ascii', 80, 84) === 'FPR1') {
+    fingerprints = { offset: buf.readUInt32LE(84), count: buf.readUInt16LE(88) };
+  }
+  return { version, count, titles, roms, crcs, flags, index, fingerprints };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */

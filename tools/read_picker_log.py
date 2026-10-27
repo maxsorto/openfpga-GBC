@@ -44,7 +44,8 @@ def main():
     words = struct.unpack(f"{end}{len(raw) // 4}I", raw[:len(raw) // 4 * 4])
     recs = [(words[2 * i], words[2 * i + 1]) for i in range(len(words) // 2)]
     wp, total = recs[0][1] >> 16 & 0x1FF, recs[0][1] & 0xFFFF
-    order = list(range(wp, 512)) + list(range(1, wp)) if total > 511 else list(range(1, wp))
+    # records 1..64 are the first 64 written (the boot) and are never overwritten; 65..511 are a ring
+    order = list(range(1, 65)) + list(range(wp, 512)) + list(range(65, wp)) if total > 511 else list(range(1, wp))
     print(f"{total} records written, showing {len(order)}")
     st = lambda v: names.get(v, str(v))
     for i in order:

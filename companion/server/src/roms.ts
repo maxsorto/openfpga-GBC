@@ -215,3 +215,25 @@ export function scanLibrary(rootIn: string): LibraryScan {
   flushCrcCache();
   return { root, files, unreadable };
 }
+
+/**
+ * Cartridge fingerprint of a ROM file: bytes 0x14E, 0x14F (global checksum),
+ * 0x14D (header checksum) and 0x143 (CGB flag), as Play Cartridge reads them from a
+ * cart. Four zeros for a file shorter than 0x150 bytes or one that can not be read.
+ */
+export function romFingerprint(file: string): Buffer {
+  const head = Buffer.alloc(0x150);
+  let n = 0;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    n = 0;
+  }
+  if (n < 0x150) return Buffer.alloc(4);
+  return Buffer.from([head[0x14e], head[0x14f], head[0x14d], head[0x143]]);
+}

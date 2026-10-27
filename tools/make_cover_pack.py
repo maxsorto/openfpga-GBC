@@ -13,6 +13,9 @@ v7 (--v7): ver = 7, up to 2047 games, entries are title char[40] | flags u8 | pa
 path char[76], and each blob is padded to 65536 B so the core can stream any cover by index.
 Entry flags: bit 0 = original Game Boy, bit 1 = favorite (this tool has no favorites, so bit 1 is 0).
 After the picker.log path struct, v7 has one more: /Saves/<platform>/common/favorites.cfg.
+v7 cartridge fingerprints, for Play Cartridge: at file offset 80, "FPR1" | u32 table offset | u16 entry count | u16 0.
+The table follows the favorites.cfg struct on a 4 byte boundary and ends the file: per entry, ROM bytes
+0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag); 4 zeros if the ROM is shorter than 0x150.
 v7 games are in letter order: titles that start with anything but A to Z first ('#'), then A to Z, each
 group sorted by title ignoring case. The reserved area then starts with a letter index for Up/Down jumps:
   16  "IDX1"   20  fav_count u16   22  played_count u16   24  27 x u16 section starts
@@ -49,6 +52,13 @@ def index_block(stems, fav_count=0, played_count=0):
     present = [x for x in starts if x != 0xFFFF]
     assert present == sorted(present), "letter sections must be in order"
     return struct.pack("<4sHH27H", b"IDX1", fav_count, played_count, *starts).ljust(512, b"\0")
+
+FPR_AT = 80  # file offset of "FPR1", in the reserved area after the letter index
+
+def fingerprint(path):
+    """Cart header bytes Play Cartridge matches on: 0x14E, 0x14F, 0x14D, 0x143."""
+    with open(path, "rb") as f: h = f.read(0x150)
+    return bytes([h[0x14E], h[0x14F], h[0x14D], h[0x143]]) if len(h) >= 0x150 else bytes(4)
 
 def rgb565(rgb): r, g, b = rgb; return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
 
@@ -100,15 +110,24 @@ def main():
         c = fit(im, CEN); t = fit(im, TH)
         blobs.append(b"".join(struct.pack("<H", rgb565(p)) for p in c.getdata()) +
                      b"".join(struct.pack("<H", rgb565(p)) for p in t.getdata()))
+    n = len(roms)
+    paths0 = 16 + 512 + n * (128 + STRIDE7)
+    table_at = (paths0 + (n * 3 + 2) * 256 + 3) & ~3  # after the favorites.cfg struct, 4 byte aligned
+    reserved = bytes(512)
+    if a.v7:
+        reserved = bytearray(index_block([os.path.splitext(r)[0] for r in roms]))
+        reserved[FPR_AT - 16:FPR_AT - 16 + 12] = struct.pack("<4sIHH", b"FPR1", table_at, n, 0)
     with open(a.out, "wb") as f:
         f.write(struct.pack("<4sHHHH4x", b"GBCV", 7 if a.v7 else 6, len(roms), CEN, TH))
-        f.write(index_block([os.path.splitext(r)[0] for r in roms]) if a.v7 else bytes(512))
+        f.write(bytes(reserved))
         f.write(b"".join(entries))
         f.write(b"".join(b.ljust(STRIDE7, b"\0") for b in blobs) if a.v7 else b"".join(blobs))
         f.write(b"".join(paths))
         f.write(f"/Saves/{a.platform}/common/picker.log".encode().ljust(256, b"\0"))
         if a.v7:  # the core opens favorites.cfg through this struct, right after the log one
             f.write(f"/Saves/{a.platform}/common/favorites.cfg".encode().ljust(256, b"\0"))
+            f.write(bytes(table_at - f.tell()))
+            f.write(b"".join(fingerprint(os.path.join(a.roms, r)) for r in roms))
     print(f"wrote {a.out}: {len(roms)} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()

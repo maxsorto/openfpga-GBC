@@ -10,7 +10,7 @@ import { letterGroup, type MenuSection, type PackWriter } from './pack-common.js
 
 export * from './pack-common.js';
 export { MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize } from './pack-v6.js';
-export { MAX_GAMES_V7, NO_SECTION, PACK_V7, STRIDE_V7, letterIndex } from './pack-v7.js';
+export { FINGERPRINT_BYTES, FPR_OFFSET, MAX_GAMES_V7, NO_SECTION, PACK_V7, STRIDE_V7, letterIndex } from './pack-v7.js';
 
 const WRITERS: Record<number, PackWriter> = { 6: packV6, 7: packV7 };
 

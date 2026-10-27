@@ -12,7 +12,7 @@ import { PYTHON, writeFakeRom, writeFixturePng } from './fixtures.js';
 import { decodeImage, placeholderImage } from '../src/image.js';
 import { artBlob as artBlobOf } from '../src/pack-common.js';
 import { buildPack, compareTitles, expectedPackSize, packWriter, readPackSummary, BLOB_BYTES, ENTRY_BYTES, NO_SECTION, STRIDE_V7, type PackGame, type StreamGame } from '../src/pack.js';
-import { crc32 } from '../src/roms.js';
+import { crc32, romFingerprint } from '../src/roms.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '.out', 'pack');
@@ -66,6 +66,7 @@ async function tsGames(f: Fixture, max: number): Promise<PackGame[]> {
       romSize: fs.statSync(path.join(f.roms, rom)).size,
       art: cover ? await decodeImage(fs.readFileSync(cover)) : await placeholderImage(stem),
       crc: crc32(fs.readFileSync(path.join(f.roms, rom))),
+      fingerprint: romFingerprint(path.join(f.roms, rom)),
     });
   }
   return games;
@@ -204,4 +205,34 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
 
   // Nothing close to the whole pack is ever one buffer: the largest piece is the path structs.
   assert.ok(biggest <= Math.max(STRIDE_V7, 40 * 3 * 256 + 256), `largest chunk ${biggest}`);
+});
+
+test('pack v7 fingerprints match make_cover_pack.py --v7, including a ROM shorter than the header', async () => {
+  const f = makeFixture(
+    'v7-fingerprints',
+    [
+      ['Known Header.gbc', 32768],
+      ['Tiny.gb', 200],
+    ],
+    [
+      ['Known Header.png', 120, 100],
+      ['Tiny.png', 90, 80],
+    ],
+  );
+  // Known cart header bytes: CGB flag 0x80, header checksum 0xAB, global checksum 0x1234.
+  const rom = fs.readFileSync(path.join(f.roms, 'Known Header.gbc'));
+  rom[0x143] = 0x80;
+  rom[0x14d] = 0xab;
+  rom[0x14e] = 0x12;
+  rom[0x14f] = 0x34;
+  fs.writeFileSync(path.join(f.roms, 'Known Header.gbc'), rom);
+  const py = runPython(f, path.join(OUT, 'v7-fingerprints', 'python.bin'), true);
+  const ts = packWriter(7).build(letterOrder(await tsGames(f, 2047)));
+  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  const s = readPackSummary(ts)!;
+  assert.deepEqual(s.fingerprints, { offset: ts.length - 2 * 4, count: 2 });
+  const rec = (i: number) => [...ts.subarray(s.fingerprints!.offset + i * 4, s.fingerprints!.offset + i * 4 + 4)];
+  assert.deepEqual(s.titles, ['Known Header', 'Tiny']);
+  assert.deepEqual(rec(0), [0x12, 0x34, 0xab, 0x80]);
+  assert.deepEqual(rec(1), [0, 0, 0, 0]);
 });

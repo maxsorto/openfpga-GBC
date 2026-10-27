@@ -30,6 +30,7 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 | Browse | Left and Right glide the covers over 8 frames with an ease-out. Hold to scroll. Long titles scroll as a marquee. |
 | Jump | Up and Down jump to the previous and next letter (and to your favorites at the top). The letter shows under the title. |
 | Favorites | Select switches between all games and only your favorites. |
+| Play Cartridge | Choose Play Cartridge in the Pocket's menu with a cart inserted: the core reads the cart's header, and if it matches a game in your pack it shows that cover labeled CARTRIDGE; A boots the cart with its own save. No match boots the cart at once. |
 | Options | X opens the selected game's options: Play, Start over (drops a suspend point and boots fresh), favorite on or off, Back. Favorites changed on the Pocket go to `favorites.cfg` and the companion app applies them on the next sync. |
 | Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. |
 | Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. |

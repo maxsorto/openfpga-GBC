@@ -253,7 +253,7 @@ Both formats are defined by `tools/make_cover_pack.py` (v6 by default, v7 with `
 | Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad[3], size u32, CRC32 u32, path[76] |
 | Flags | bit 0 original Game Boy | bit 0 original Game Boy, bit 1 favorite |
 | Art per game | 45568 B, packed back to back | the same 45568 B, padded with zeros to 65536 B |
-| After the log path | nothing | one more path struct: `/Saves/<platform>/common/favorites.cfg` |
+| After the log path | nothing | one more path struct: `/Saves/<platform>/common/favorites.cfg`, then the cartridge fingerprint table |
 | Favorites | listed once | at the top, and again under their letter (full copies) |
 
 Both start with a 16 byte header (`GBCV`, version, count, 128, 80) and 512 reserved
@@ -274,7 +274,30 @@ between letters:
 | 22 | u16 | Played: how many entries lead the menu as recently played (0 until play history exists) |
 | 24 | 27 x u16 | Where each letter starts: `#`, then A to Z. The menu index of the first entry in the A to Z list (after the top sections; it includes favorites again) whose title, as written in the entry, starts with that letter, ignoring case. `0xFFFF` if none. |
 
+At file offset 80, after the letter index, v7 says where the cartridge fingerprint table
+is:
+
+| Offset | Size | What |
+| --- | --- | --- |
+| 80 | 4 | `FPR1` |
+| 84 | u32 | File offset of the table |
+| 88 | u16 | Records in it: the pack's entry count, duplicates included |
+| 90 | u16 | 0 |
+
 The rest of the 512 bytes is zero. v6 keeps all 512 bytes zero.
+
+The table comes right after the `favorites.cfg` path struct, at
+paths0 + (count x 3 + 2) x 256 (on a 4 byte boundary), and ends the file. It has one
+4 byte record per entry, in entry order: ROM bytes `0x14E` and `0x14F` (the global
+checksum, as stored), `0x14D` (the header checksum) and `0x143` (the CGB flag), read
+from that entry's ROM file. A ROM shorter than `0x150` bytes gets four zeros. A
+favorite's two entries have the same record.
+
+### Play Cartridge
+
+When you choose Play Cartridge in the Pocket menu, the core reads the cart's header and
+looks it up in the fingerprint table. If it matches a game in the pack, it shows that
+game's cover labeled CARTRIDGE, then boots the cart with the cart's own save.
 
 The A to Z part is sorted to match: titles that start with anything but a letter (digits,
 punctuation, and characters the pack writes as `?`) come first as `#`, then A to Z, each
@@ -313,11 +336,15 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   on the copy alone), a ROM hack only on the card stays in the menu and can be starred,
   saves are matched to ROMs (and flagged when a game leaves), and an empty library folder
   removes nothing.
+- `pack-compat.test.ts` also checks the fingerprint table against the Python tool, with
+  a ROM whose header bytes are known and a ROM shorter than the header.
 - `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
   give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
   with the favorites at the top and again under their letter (full copies, flags bit 1
-  on both), each entry carrying its ROM's CRC32, and the `favorites.cfg` path right after
-  the log path; switching the core back gives v6 with 31 and no extras.
+  on both), each entry carrying its ROM's CRC32, the `favorites.cfg` path right after
+  the log path, and the fingerprint table (`FPR1` at offset 80, one record per entry
+  read from the ROM on the card, the same for both entries of a favorite) ending the
+  file; switching the core back gives v6 with 31 and no extras.
 - `progress.test.ts`: a sync with only the pack to write, on a card made slow on purpose,
   sends each step and its bytes as it goes, and the app's event stream delivers them
   before the end. Also: no `._` files are left for files the app renamed or removed,

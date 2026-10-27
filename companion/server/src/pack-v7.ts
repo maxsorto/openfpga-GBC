@@ -18,9 +18,32 @@
  * under their letter in the A to Z list, which holds every game. Both entries are full
  * copies (title, flags, size, CRC, art, path structs).
  * After the picker.log path struct comes one more: /Saves/<platform>/common/favorites.cfg.
+ *
+ * Cartridge fingerprints, for Play Cartridge: at file offset 80 (in the reserved area,
+ * after the letter index) "FPR1" | u32 file offset of the table | u16 entry count | u16 0.
+ * The table follows the favorites.cfg path struct, on a 4 byte boundary, and ends the
+ * file: one 4 byte record per entry, in entry order, duplicates included: ROM bytes
+ * 0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag).
  * The rest of the layout is in pack-common.ts.
  */
-import { ENTRY_BYTES, RESERVED_BYTES, asciiTitle, fixed, gamePaths, letterGroup, makeWriter, type PackEntry, type PackFormat } from './pack-common.js';
+import {
+  ENTRY_BYTES,
+  RESERVED_BYTES,
+  asciiTitle,
+  fixed,
+  gamePaths,
+  letterGroup,
+  makeWriter,
+  tailStart,
+  type PackEntry,
+  type PackFormat,
+} from './pack-common.js';
+
+/** File offset of "FPR1" in the reserved area. */
+export const FPR_OFFSET = 80;
+export const FINGERPRINT_BYTES = 4;
+
+const align4 = (n: number) => (n + 3) & ~3;
 
 export const NO_SECTION = 0xffff;
 
@@ -77,6 +100,20 @@ export const formatV7: PackFormat = {
   },
   // The core opens favorites.cfg through this path struct, right after the log one.
   trailer: (platform) => [`/Saves/${platform}/common/favorites.cfg`],
+  tailBytes(count) {
+    const start = tailStart(formatV7, count);
+    return align4(start) - start + count * FINGERPRINT_BYTES;
+  },
+  tail(games, start) {
+    const pad = align4(start) - start;
+    const out = Buffer.alloc(pad + games.length * FINGERPRINT_BYTES);
+    games.forEach((g, i) => {
+      const f = g.fingerprint;
+      if (f && f.length !== FINGERPRINT_BYTES) throw new Error(`${g.romFile}: a fingerprint is ${FINGERPRINT_BYTES} bytes`);
+      f?.copy(out, pad + i * FINGERPRINT_BYTES);
+    });
+    return out;
+  },
   arrange(games) {
     if (ascending(letterIndex(games).starts)) return games;
     // menuOrder() sorts by the same letter rule, so this does not happen. If it does,
@@ -98,6 +135,12 @@ export const formatV7: PackFormat = {
     r.writeUInt16LE(idx.favCount, 4);
     r.writeUInt16LE(idx.playedCount, 6);
     idx.starts.forEach((s, i) => r.writeUInt16LE(s, 8 + i * 2));
+    // Where Play Cartridge finds the fingerprint table.
+    const at = FPR_OFFSET - 16;
+    r.write('FPR1', at, 'ascii');
+    r.writeUInt32LE(align4(tailStart(formatV7, games.length)), at + 4);
+    r.writeUInt16LE(games.length, at + 8);
+    r.writeUInt16LE(0, at + 10);
     return r;
   },
 };

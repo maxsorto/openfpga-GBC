@@ -33,7 +33,7 @@ import { cardRomDir } from './library.js';
 import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeFileSynced, writeManifest, type ManifestEntry } from './manifest.js';
 import { PACK_HEAD_MAX, packWriter, readPackSummary, type StreamGame } from './pack.js';
 import { makePlan, type PlanOptions, type SyncPlan } from './plan.js';
-import { crc32, fileCrc, flushCrcCache, rememberCrc } from './roms.js';
+import { crc32, fileCrc, flushCrcCache, rememberCrc, romFingerprint } from './roms.js';
 
 export type SyncPhase = 'check' | 'copy' | 'remove' | 'pack' | 'write' | 'verify';
 
@@ -345,6 +345,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
           crc: g.crc,
           favorite: g.favorite,
           section,
+          fingerprint: romFingerprint(g.sourcePath),
           blob: async () => {
             try {
               return await packBlob(g.art, g.title);

@@ -137,7 +137,20 @@ test('streaming core: v7 lists favorites at the top and again under their letter
   const struct = (k: number) => buf.toString('utf8', paths0 + k * 256, paths0 + (k + 1) * 256).replace(/\0+$/, '');
   assert.equal(struct(42 * 3), '/Saves/gbc/common/picker.log');
   assert.equal(struct(42 * 3 + 1), '/Saves/gbc/common/favorites.cfg');
-  assert.equal(buf.length, paths0 + (42 * 3 + 2) * 256);
+  // Then the cartridge fingerprint table, one record per entry (duplicates included), ending the file.
+  const table = paths0 + (42 * 3 + 2) * 256;
+  assert.equal(buf.toString('ascii', 80, 84), 'FPR1');
+  assert.equal(buf.readUInt32LE(84), table);
+  assert.equal(buf.readUInt16LE(88), 42);
+  assert.equal(buf.readUInt16LE(90), 0);
+  assert.equal(table % 4, 0);
+  assert.equal(buf.length, table + 42 * 4);
+  const rec = (i: number) => buf.subarray(table + i * 4, table + i * 4 + 4);
+  s.roms.forEach((r, i) => {
+    const romBytes = fs.readFileSync(path.join(CARD, r));
+    assert.deepEqual([...rec(i)], [romBytes[0x14e], romBytes[0x14f], romBytes[0x14d], romBytes[0x143]], s.titles[i]);
+  });
+  assert.ok(rec(top).equals(rec(again)), 'a favorite\'s two entries have the same fingerprint');
   assert.ok(!fs.existsSync(path.join(ROMDIR, '.covers.bin.part')));
 });
 
@@ -155,6 +168,7 @@ test('back to a 31 game core: v6, cut to 31, same order', async () => {
   // v6 has no favorites.cfg path and no duplicates: it ends with the log path.
   const buf = fs.readFileSync(path.join(ROMDIR, 'covers.bin'));
   assert.equal(buf.toString('utf8', buf.length - 256).replace(/\0+$/, ''), '/Saves/gbc/common/picker.log');
+  assert.ok(buf.subarray(16, 528).every((x) => x === 0), 'no FPR1 in v6');
   assert.equal(new Set(s.crcs.length ? s.crcs : s.roms).size, 31);
 });
 
@@ -207,9 +221,12 @@ test('v7 index on a synced card: favorites counted, listed again under their let
   for (const l of 'CDEFGHIJKLMNOPQRSUVXY') assert.equal(at(l), 0xffff, l);
   const present = idx.starts.filter((x) => x !== 0xffff);
   assert.deepEqual(present, [...present].sort((a, b) => a - b));
-  // The rest of the 512 bytes is zero.
+  // The reserved area holds only the index and the FPR1 block.
   const head = fs.readFileSync(path.join(card2, 'Assets', 'gbc', 'common', 'covers.bin')).subarray(16, 528);
-  assert.ok(head.subarray(24 - 16 + 27 * 2).every((b) => b === 0));
+  // After the index (it ends at file offset 78): zeros, then FPR1 at 80 (12 bytes), then zeros.
+  assert.ok(head.subarray(24 - 16 + 27 * 2, 80 - 16).every((b) => b === 0));
+  assert.equal(head.toString('ascii', 80 - 16, 84 - 16), 'FPR1');
+  assert.ok(head.subarray(92 - 16).every((b) => b === 0));
 });
 
 test('v6 has no index: the reserved area stays zero', async () => {
