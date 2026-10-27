@@ -19,6 +19,8 @@ export interface Game {
   cardState: CardState;
   /** For cardKept and replace: the card's own file with this game's name. */
   cardFile: string | null;
+  /** A card copy kept instead of a library game: that game's CRC. It takes its star, art and title. */
+  inheritsFrom: string | null;
   /** File name on the card. */
   file: string;
   platform: string;
@@ -189,6 +191,7 @@ export type SyncPhase = 'check' | 'copy' | 'remove' | 'pack' | 'write' | 'verify
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }
   | { type: 'progress'; done: number; total: number }
+  | { type: 'bytes'; phase: SyncPhase; done: number; total: number; flushing?: boolean; label?: string }
   | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept' | 'adopted'; bytesDone: number; bytesTotal: number }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
   | { type: 'done'; target: string; bytes: number; count: number; copied: number; removed: number; unchanged: number; backup: string | null }

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { PYTHON, writeFakeRom, writeFixturePng } from './fixtures.js';
 import { decodeImage, placeholderImage } from '../src/image.js';
 import { artBlob as artBlobOf } from '../src/pack-common.js';
-import { buildPack, expectedPackSize, packWriter, readPackSummary, BLOB_BYTES, ENTRY_BYTES, STRIDE_V7, type PackGame, type StreamGame } from '../src/pack.js';
+import { buildPack, compareTitles, expectedPackSize, packWriter, readPackSummary, BLOB_BYTES, ENTRY_BYTES, NO_SECTION, STRIDE_V7, type PackGame, type StreamGame } from '../src/pack.js';
 import { crc32 } from '../src/roms.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,11 @@ async function tsGames(f: Fixture, max: number): Promise<PackGame[]> {
     });
   }
   return games;
+}
+
+/** v7 order, as the app's menuOrder() gives it with no favorites: '#' first, then A to Z. */
+function letterOrder(games: PackGame[]): PackGame[] {
+  return [...games].sort((a, b) => compareTitles({ ...a, file: a.romFile, crc: '', favorite: false }, { ...b, file: b.romFile, crc: '', favorite: false }));
 }
 
 async function runTs(f: Fixture): Promise<Buffer> {
@@ -143,23 +148,35 @@ test('pack v7 is byte-identical to make_cover_pack.py --v7 (3 ROMs, all with art
   const f = makeFixture('v7-with-art', V7_ROMS, V7_COVERS);
   const py = runPython(f, path.join(OUT, 'v7-with-art', 'python.bin'), true);
   const v7 = packWriter(7);
-  const ts = v7.build(await tsGames(f, 2047));
+  const ts = v7.build(letterOrder(await tsGames(f, 2047)));
   assert.equal(py.length, v7.expectedSize(3));
   assert.equal(ts.length, py.length, 'file size');
   assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
   const s = readPackSummary(ts)!;
   assert.equal(s.version, 7);
-  assert.deepEqual(s.crcs, (await tsGames(f, 2047)).map((g) => g.crc));
+  assert.deepEqual(s.crcs, letterOrder(await tsGames(f, 2047)).map((g) => g.crc));
+  // L, P and T sections; Pokemon is P at 1, Legend at 0, Tetris at 2.
+  assert.deepEqual(s.index && { fav: s.index.favCount, played: s.index.playedCount }, { fav: 0, played: 0 });
+  assert.equal(s.index!.starts[12], 0);
+  assert.equal(s.index!.starts[16], 1);
+  assert.equal(s.index!.starts[20], 2);
 });
 
 test('pack v7 streamed write equals the in-memory build, and holds more than 31 games', async () => {
-  // 40 ROMs with small art, so the Python tool runs fast; the names sort the same in both tools.
-  const roms: [string, number][] = Array.from({ length: 40 }, (_, i) => [`Game ${String(i).padStart(2, '0')}.${i % 3 ? 'gbc' : 'gb'}`, 4096 + i * 512]);
-  const covers: [string, number, number][] = roms.map(([r], i) => [r.replace(/\.[^.]+$/, '.png'), 64 + (i % 5) * 20, 60 + (i % 4) * 25]);
-  const f = makeFixture('v7-forty', roms, covers);
+  // 40 ROMs with small art, so the Python tool runs fast. Titles start with digits,
+  // punctuation and lower case letters, and several letters have no game at all.
+  const stems = [
+    '1942', '~Tilde Quest', '3D Pocket', '[Bracket]', 'alleyway', 'Asteroids', 'Balloon Kid', 'batman',
+    'Castlevania', 'Donkey Kong', 'dr. Mario', 'Final Fantasy', 'Kirby', 'kwirk', 'Mario Golf', 'Metroid II',
+    'Mole Mania', 'Pokemon Blue', 'Pokemon Red', 'pokemon yellow', 'Quarth', 'R-Type', 'Shantae', 'Tetris',
+    'The Legend of Zelda', 'tetris attack', 'Wario Land', 'Wave Race', 'Yoshi', 'Zelda DX',
+    'Amazing Penguin', 'Bomberman', 'Catrap', 'Duck Tales', 'Faceball', 'Gargoyle', 'Kid Icarus', 'Mega Man', 'Pinball', 'Sneaky Snakes',
+  ];
+  const roms: [string, number][] = stems.map((n, i) => [`${n}.${i % 3 ? 'gbc' : 'gb'}`, 4096 + i * 512]);
+  const covers: [string, number, number][] = stems.map((n, i) => [`${n}.png`, 64 + (i % 5) * 20, 60 + (i % 4) * 25]);  const f = makeFixture('v7-forty', roms, covers);
   const py = runPython(f, path.join(OUT, 'v7-forty', 'python.bin'), true);
   const v7 = packWriter(7);
-  const games = await tsGames(f, 2047);
+  const games = letterOrder(await tsGames(f, 2047));
   assert.equal(games.length, 40);
   const built = v7.build(games);
   assert.equal(firstDiff(built, py), -1, 'in-memory build matches Python');
@@ -173,6 +190,18 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
   });
   assert.equal(n, py.length);
   assert.equal(firstDiff(Buffer.concat(chunks), py), -1, 'streamed write matches Python');
+  // The letter index: '#' first, missing letters 0xFFFF, starts in order.
+  const idx = readPackSummary(built)!.index!;
+  const titles = games.map((g) => g.title);
+  assert.deepEqual(titles.slice(0, 4), ['1942', '3D Pocket', '[Bracket]', '~Tilde Quest']);
+  assert.equal(idx.starts[0], 0);
+  assert.equal(titles[idx.starts[1]], 'alleyway');
+  assert.equal(titles[idx.starts[20]], 'Tetris');
+  assert.equal(titles[idx.starts[16]], 'Pinball');
+  for (const missing of ['E', 'H', 'I', 'J', 'L', 'N', 'O', 'U', 'V', 'X']) assert.equal(idx.starts[missing.charCodeAt(0) - 64], NO_SECTION, missing);
+  const present = idx.starts.filter((x) => x !== NO_SECTION);
+  assert.deepEqual(present, [...present].sort((a, b) => a - b));
+
   // Nothing close to the whole pack is ever one buffer: the largest piece is the path structs.
   assert.ok(biggest <= Math.max(STRIDE_V7, 40 * 3 * 256 + 256), `largest chunk ${biggest}`);
 });

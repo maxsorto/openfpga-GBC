@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MANIFEST_REL } from './config.js';
 import { isRomName } from './roms.js';
+import { removeAppleDouble } from './io.js';
 
 export interface ManifestEntry {
   crc: string;
@@ -113,6 +114,7 @@ export function writeFileSynced(file: string, data: Buffer): void {
     fs.closeSync(fd);
   }
   fs.renameSync(tmp, file);
+  removeAppleDouble(tmp);
   syncDir(path.dirname(file));
 }
 

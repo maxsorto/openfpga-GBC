@@ -132,11 +132,19 @@ function GameCardImpl({ game, position, beyondLimit, onOpen, onFavorite, onRenam
               {STATUS_LABEL[game.status]}
             </span>
           )}
-          {game.origin === 'card' && (
-            <span className="chip card-only" title="On the card, not in your library folder. It stays in the menu and sync never removes it.">
-              Card only
-            </span>
-          )}
+          {game.origin === 'card' &&
+            (game.inheritsFrom ? (
+              <span
+                className="chip card-only"
+                title="Kept on the card instead of the library's ROM with the same name, because its save is tied to that name. It takes that game's star, art and title unless you change them here."
+              >
+                Card's copy
+              </span>
+            ) : (
+              <span className="chip card-only" title="On the card, not in your library folder. It stays in the menu and sync never removes it.">
+                Card only
+              </span>
+            ))}
           {game.cardState === 'cardKept' && (
             <span
               className="chip card-only"

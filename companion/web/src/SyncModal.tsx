@@ -5,16 +5,43 @@ import { fmtBytes, isVolumePath } from './util';
 
 type Stage = 'planning' | 'plan' | 'running' | 'done' | 'error';
 
+// In the order sync runs them. (With a nearly full card, removing comes before copying.)
 const STEPS: { phase: SyncPhase; label: string }[] = [
   { phase: 'check', label: 'Check the card' },
   { phase: 'copy', label: 'Copy ROMs and verify each one' },
   { phase: 'remove', label: 'Remove ROMs that left the library' },
-  { phase: 'pack', label: 'Build covers.bin' },
-  { phase: 'write', label: 'Write covers.bin and the manifest' },
-  { phase: 'verify', label: 'Read back and verify' },
+  { phase: 'pack', label: 'Build and write covers.bin' },
+  { phase: 'verify', label: 'Read covers.bin back and verify it' },
+  { phase: 'write', label: 'Put covers.bin in place and write the manifest' },
 ];
 
 type FileEvent = Extract<SyncEvent, { type: 'file' }>;
+type BytesEvent = Extract<SyncEvent, { type: 'bytes' }>;
+
+/** Bytes progress for the current phase, with when it started, for a time estimate. */
+interface Bytes extends BytesEvent {
+  startedAt: number;
+  startDone: number;
+  flushSince: number | null;
+}
+
+function fmtSecs(s: number): string {
+  if (s < 60) return `${Math.max(1, Math.round(s))} s`;
+  const m = Math.floor(s / 60);
+  const r = Math.round(s % 60);
+  return r ? `${m} min ${r} s` : `${m} min`;
+}
+
+/** "12.0 MB of 44.5 MB, about 40 s left", or the flush timer. */
+function bytesLine(b: Bytes, now: number): string {
+  if (b.flushing && b.flushSince != null) return `${b.label ?? 'Flushing to the card'}, ${fmtSecs((now - b.flushSince) / 1000)}`;
+  const amount = `${fmtBytes(b.done)} of ${fmtBytes(b.total)}`;
+  const secs = (now - b.startedAt) / 1000;
+  const moved = b.done - b.startDone;
+  if (secs < 1.5 || moved <= 0 || b.done >= b.total) return amount;
+  const left = (b.total - b.done) / (moved / secs);
+  return `${amount}, about ${fmtSecs(left)} left`;
+}
 
 interface Props {
   card: string;
@@ -42,6 +69,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
   const [result, setResult] = useState<Extract<SyncEvent, { type: 'done' }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [eject, setEject] = useState<{ state: 'idle' | 'busy' | 'ok' | 'fail'; steps: string[] }>({ state: 'idle', steps: [] });
+  const [bytes, setBytes] = useState<Bytes | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [replan, setReplan] = useState(0);
   const [changed, setChanged] = useState(false);
 
@@ -78,6 +107,13 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
 
   const canEject = isVolumePath(card);
 
+  // A clock for the time estimate and the flush timer.
+  useEffect(() => {
+    if (stage !== 'running') return;
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, [stage]);
+
   async function start() {
     if (!plan) return;
     setStage('running');
@@ -87,6 +123,20 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
         if (e.type === 'phase') {
           setSeen((s) => (s.includes(e.phase) ? s : [...s, e.phase]));
           setProgress(0);
+          setBytes(null);
+        } else if (e.type === 'bytes') {
+          const t = Date.now();
+          setNow(t);
+          setBytes((prev) => {
+            const same = prev && prev.phase === e.phase && prev.total === e.total && prev.label === e.label;
+            return {
+              ...e,
+              startedAt: same ? prev.startedAt : t,
+              startDone: same ? prev.startDone : e.done,
+              flushSince: e.flushing ? (same && prev.flushSince != null ? prev.flushSince : t) : null,
+            };
+          });
+          setProgress(e.done / Math.max(1, e.total));
         } else if (e.type === 'file') {
           setFile(e);
           if (e.bytesTotal) setProgress(e.bytesDone / e.bytesTotal);
@@ -122,6 +172,13 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
     if (p === current && stage === 'running') return 'active';
     if (seen.includes(p)) return 'done';
     if (stage === 'done') return 'skip';
+    // Steps with nothing to do show as skipped once sync is past them.
+    if (plan && stage === 'running') {
+      const nothing =
+        (p === 'copy' && !plan.copy.length) || (p === 'remove' && !plan.remove.length) || ((p === 'pack' || p === 'verify') && !plan.pack.count);
+      const passed = STEPS.findIndex((x) => x.phase === p) < STEPS.findIndex((x) => x.phase === current);
+      if (nothing && passed) return 'skip';
+    }
     return 'todo';
   };
   const stepNote = (p: SyncPhase) => {
@@ -133,7 +190,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
     }
     if (p === 'check' && plan.adopt.length) return `${plan.adopt.length} adopted`;
     if (p === 'remove') return plan.remove.length ? `${plan.remove.length}` : stage === 'done' ? 'nothing to remove' : null;
-    if (p === 'pack' && current === 'pack') return `${Math.round(progress * plan.pack.count)} of ${plan.pack.count}`;
+    if ((p === 'pack' || p === 'verify') && current === p && bytes?.phase === p) return `${Math.floor(progress * 100)}%`;
+    if (p === 'pack' && !plan.pack.count) return stage === 'done' ? 'no games' : null;
     return null;
   };
 
@@ -379,7 +437,7 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                       <span className="step-mark">
                         {state === 'done' ? <IconCheck size={12} /> : state === 'fail' ? <IconClose size={12} /> : null}
                       </span>
-                      {s.phase === 'pack' && plan ? `Build covers.bin (pack v${plan.pack.version})` : s.label}
+                      {s.phase === 'pack' && plan ? `Build and write covers.bin (pack v${plan.pack.version})` : s.label}
                       {note && <span className="dim mono step-note">{note}</span>}
                     </li>
                   );
@@ -393,15 +451,24 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                         <span className="grow ellipsis">
                           {file.state === 'copying' ? 'Copying' : 'Verified'} <strong>{file.file}</strong>
                         </span>
-                        <span className="dim mono">
-                          {fmtBytes(file.bytesDone)} of {fmtBytes(file.bytesTotal)}
+                        <span className="dim mono">{bytes?.phase === 'copy' ? bytesLine(bytes, now) : `${fmtBytes(file.bytesDone)} of ${fmtBytes(file.bytesTotal)}`}</span>
+                      </>
+                    ) : bytes && bytes.phase === current ? (
+                      <>
+                        <span className="grow ellipsis">
+                          {bytes.flushing ? (
+                            <strong>Flushing to the card</strong>
+                          ) : (
+                            bytes.label ?? STEPS.find((s) => s.phase === current)?.label
+                          )}
                         </span>
+                        <span className="dim mono">{bytesLine(bytes, now)}</span>
                       </>
                     ) : (
-                      <span className="dim">{STEPS.find((s) => s.phase === current)?.label ?? 'Starting'}…</span>
+                      <span className="dim">{current ? STEPS.find((s) => s.phase === current)?.label : 'Checking the card'}…</span>
                     )}
                   </div>
-                  <div className="bar">
+                  <div className={`bar ${bytes?.flushing ? 'flushing' : ''}`}>
                     <div style={{ width: `${Math.round(progress * 100)}%` }} />
                   </div>
                 </div>

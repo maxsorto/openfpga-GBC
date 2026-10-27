@@ -1998,3 +1998,13 @@ button.link.small {
 .save-rom::before {
   content: '\2192\00a0';
 }
+
+/* While the last part of a file is flushed to the card: the bar is full but still working. */
+.bar.flushing div {
+  animation: flush-pulse 1.2s ease-in-out infinite;
+}
+@keyframes flush-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}

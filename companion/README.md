@@ -38,7 +38,9 @@ There is no Python dependency.
    and checked by CRC32, then renamed into place. Unchanged ROMs are skipped, so a
    resync takes seconds. ROMs that left the library are removed, but only ones the app
    placed. Then `covers.bin` and the manifest are written, read back and verified, and
-   the app offers Eject. Progress shows file by file.
+   the app offers Eject. Each step ticks as it finishes. Copying, writing the pack and
+   reading it back show megabytes done, megabytes in all, and a rough time left, so a
+   slow card (USB through the Pocket runs at about 0.6 MB/s) never looks stuck.
 
 ### What sync touches on the card
 
@@ -73,9 +75,11 @@ Sync compares the library with what is on the card, game by game:
 - **Kept the card's version.** A ROM you copied by hand with the same name (before the
   extension) as a library game, but a different CRC, stays as it is, because its save is
   tied to that name. The library's copy is not placed, so the Pocket does not show two
-  entries. The plan lists these, and each one has "Use the library's": sync then replaces
-  the card's copy under the same name, after saving it to the Mac
-  (`covers-backups/replaced-roms/`).
+  entries. The card's copy takes the library game's star, picked art and title, so it
+  sits in the same place in the menu and looks the same. Change them on the card's copy
+  and they are saved for that copy alone. The plan lists these, and each one has "Use
+  the library's": sync then replaces the card's copy under the same name, after saving
+  it to the Mac (`covers-backups/replaced-roms/`).
 - **Card only.** ROMs on the card that are not in the library, such as ROM hacks, stay in
   the Pocket view and the menu order like any game (after favorites, A to Z, unless
   starred). Sync never removes them.
@@ -104,16 +108,29 @@ Sync reads `Cores/maxsorto.GBC/core.json` on the card and looks at
 | Any other version, or no core found | Pack v6 | The first 31 |
 
 Either way, sync copies every game, and the menu order is the same: games you played,
-then favorites A to Z, then everything else A to Z. The plan says which format it chose
+then favorites A to Z, then everything else A to Z (titles that start with a digit or a
+symbol first, under `#`). The plan says which format it chose
 and why, for example "Streaming core found (1.4.0-cover2): all 702 games" or "This
 core (1.4.0-cover1) shows 31 games. Install build 17 to see all." With v6 the Pocket
 view marks where the 31 end. With v7 there is no such line.
 
 A v7 pack is about 66 KB per game: 46.6 MB for 702 games. Sync streams it to a file
-next to `covers.bin`, one game's art at a time, flushes it, reads it back to check it,
-then renames it into place, so the old pack stays intact until the new one is proven.
-The space check in the plan counts the whole new pack. Each game's packed art is
-cached on the Mac, so a resync of 702 games rebuilds the pack in under a second.
+next to `covers.bin`, one game's art at a time, and flushes it to the card every 2 MB,
+so the progress you see is what the card has taken, not what the Mac has cached. It
+then reads the file back to check it and renames it into place, so the old pack stays
+intact until the new one is proven. The space check in the plan counts the whole new
+pack. Each game's packed art is cached on the Mac, so building the pack takes a moment
+and the time goes into the card itself.
+
+The old `covers.bin` is copied to the Mac before it is replaced, unless it is the one
+the app wrote last time (same size and date as recorded). That one can be built again
+from the library, and skipping it saves reading the whole file from a slow card.
+
+### `._` files
+
+On exFAT, macOS keeps extra file information in a `._name` file next to each file. The
+app removes the `._` file of anything it renames or removes (its temporary `.part`
+files, and ROMs that left the library). It never touches any other `._` file.
 
 ### No library folder
 
@@ -192,6 +209,23 @@ bytes, and end with three 256 byte path structs per game (ROM, `.sav`, `.sus`) a
 for `picker.log`. The CRC32 in v7 is of the whole ROM file, so the core can key play
 history by game. The fixed 64 KB stride lets the core read any cover by its index.
 
+In v7 the reserved area starts with a letter index, so Up and Down on the Pocket jump
+between letters:
+
+| Offset | Size | What |
+| --- | --- | --- |
+| 16 | 4 | `IDX1` |
+| 20 | u16 | Favorites: how many games after the played ones are favorites |
+| 22 | u16 | Played: how many games lead the menu as recently played (0 until play history exists) |
+| 24 | 27 x u16 | Where each letter starts: `#`, then A to Z. The menu index of the first game in the A to Z part whose title, as written in the entry, starts with that letter, ignoring case. `0xFFFF` if none. |
+
+The rest of the 512 bytes is zero. v6 keeps all 512 bytes zero.
+
+The A to Z part is sorted to match: titles that start with anything but a letter (digits,
+punctuation, and characters the pack writes as `?`) come first as `#`, then A to Z, each
+by title ignoring case. Nothing is skipped, so "The Legend of Zelda" is under T, as the
+Pocket shows it. The Library view and the Pocket view use the same order.
+
 `server/src/pack-common.ts` has the shared layout and both ways to write it (in memory,
 or streamed one game at a time). `server/src/pack-v6.ts` and `server/src/pack-v7.ts`
 describe each entry and stride. `server/src/pack.ts` has the writers and the menu order,
@@ -204,7 +238,8 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
 
 - `pack-compat.test.ts`: three fake ROMs with generated PNG art. The TypeScript pack
   and the Python pack are identical, byte for byte, in v6 and in v7. A 40 game v7 pack
-  matches too, both built in memory and streamed.
+  matches too, both built in memory and streamed, including its letter index (titles
+  starting with digits, symbols and lower case letters, and letters with no games).
 - The same test with a ROM that has no art: everything but that game's title card
   image is identical. The title card text is drawn by a different text engine
   (librsvg instead of FreeType), so roughly 15% of its pixels differ.
@@ -219,13 +254,20 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   stale plan is refused. It runs offline.
 - `adopt.test.ts`: a card that already has ROMs, like a real one: the same Pokemon Yellow
   under `.gbc` is adopted and keeps its name, a different Pokemon Silver dump on the card
-  is kept, a ROM hack only on the card stays in the menu, saves are matched to ROMs (and
-  flagged when a game leaves), and an empty library folder removes nothing.
+  is kept and takes the library game's star, art and title (which can then be changed
+  on the copy alone), a ROM hack only on the card stays in the menu and can be starred,
+  saves are matched to ROMs (and flagged when a game leaves), and an empty library folder
+  removes nothing.
 - `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
   give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
   with every game, favorites first, each entry carrying its ROM's CRC32; switching the
   core back gives v6 with 31.
-- `order.test.ts`: played, then favorites, then the rest, as the Pocket shows them.
+- `progress.test.ts`: a sync with only the pack to write, on a card made slow on purpose,
+  sends each step and its bytes as it goes, and the app's event stream delivers them
+  before the end. Also: no `._` files are left for files the app renamed or removed,
+  and other `._` files stay.
+- `order.test.ts`: played, then favorites, then the rest, as the Pocket shows them; the
+  letter groups and the v7 letter index, including played and favorite counts.
 
 The tests use the venv at `cover-picker/.venv` (Pillow 11.3). Set
 `COVER_PICKER_PYTHON` to use another Python with Pillow.
@@ -248,8 +290,9 @@ which does not matter on the device.
   - `pack-art/`: each game's art as it goes in the pack, so a resync is quick.
   - `rom-crc.json`: CRC32 per file path, size and date, so ROMs are hashed once. A
     rescan of 700 ROMs reads no ROM data.
-  - `covers-backups/`: the previous `covers.bin` from the card, saved before each sync.
-    The last 5 are kept.
+  - `covers-backups/`: the previous `covers.bin` from the card, saved before a sync
+    replaces it, unless the app wrote it. The last 5 are kept.
+  - `written-packs.json`: size, date and hash of the last `covers.bin` written to each card.
 
 The cache can be deleted at any time. `COMPANION_DATA_DIR` and `COMPANION_CACHE_DIR`
 override both locations. `COMPANION_OFFLINE=1` turns off all downloads.
@@ -266,7 +309,8 @@ ejects it.
 companion/
   server/   Hono backend (TypeScript, run with tsx)
     src/
-      index.ts        routes, sync progress stream, static files
+      index.ts        starts the server
+      app.ts          routes, sync progress stream, static files
       config.ts       port, data folders, card paths
       settings.ts     the library folder
       volumes.ts      /Volumes listing, Pocket detection, eject
@@ -274,6 +318,7 @@ companion/
       library.ts      games: dedupe, names, art, favorites, card file names
       plan.ts         the sync plan
       sync.ts         carrying out a plan, with progress events
+      io.ts           chunked, async card writes and reads, and "._" clean up
       manifest.ts     cover-picker.json
       dat.ts          No-Intro DAT download and parsing
       thumbs.ts       libretro-thumbnails lists and box art download

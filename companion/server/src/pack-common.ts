@@ -25,8 +25,10 @@ export interface PackEntry {
   romSize: number;
   /** CRC32 of the whole ROM file, 8 hex digits. v6 does not store it; v7 does. */
   crc?: string;
-  /** Starred. Not stored yet. */
+  /** Starred. v7 counts the favorites at the start of the menu in its letter index. */
   favorite?: boolean;
+  /** Played on the Pocket. Played games come first in the menu. No play history yet. */
+  played?: boolean;
 }
 
 /** A game with its art decoded, for building a pack in memory (tests, small packs). */
@@ -43,6 +45,18 @@ export interface GamePaths {
   rom: string;
   sav: string;
   sus: string;
+}
+
+/**
+ * Letter group for the Up/Down index: 0 for '#' (anything but A to Z), 1 to 26 for
+ * A to Z. It uses the first character of the title as the pack writes it (ASCII,
+ * other characters become '?'), ignoring case, so it matches what the Pocket shows.
+ */
+export function letterGroup(title: string): number {
+  const c = asciiTitle(title, 1)[0];
+  if (c === undefined) return 0;
+  const u = c >= 0x61 && c <= 0x7a ? c - 32 : c;
+  return u >= 0x41 && u <= 0x5a ? u - 0x40 : 0;
 }
 
 function stemOf(file: string): string {
@@ -109,6 +123,10 @@ export interface PackFormat {
   /** Bytes per art blob in the file. */
   stride: number;
   entry(g: PackEntry): Buffer;
+  /** The 512 reserved bytes after the header. Zeros when not given. */
+  reserved?(games: PackEntry[]): Buffer;
+  /** A last chance to fix the order, for formats that rely on it. Returns the games to write, in order. */
+  arrange?<T extends PackEntry>(games: T[]): T[];
 }
 
 export interface PackBuildOptions {
@@ -130,13 +148,18 @@ function checkGames(fmt: PackFormat, games: PackEntry[]): void {
   }
 }
 
-function header(fmt: PackFormat, count: number): Buffer {
+function header(fmt: PackFormat, games: PackEntry[]): Buffer {
   const h = Buffer.alloc(HEADER_BYTES + RESERVED_BYTES);
   h.write('GBCV', 0, 'ascii');
   h.writeUInt16LE(fmt.version, 4);
-  h.writeUInt16LE(count, 6);
+  h.writeUInt16LE(games.length, 6);
   h.writeUInt16LE(CEN, 8);
   h.writeUInt16LE(TH, 10);
+  if (fmt.reserved) {
+    const r = fmt.reserved(games);
+    if (r.length !== RESERVED_BYTES) throw new Error('Reserved area must be 512 bytes');
+    r.copy(h, HEADER_BYTES);
+  }
   return h;
 }
 
@@ -159,9 +182,10 @@ function padBlob(fmt: PackFormat, blob: Buffer): Buffer {
 }
 
 /** The whole pack in memory. Fine for 31 games and for tests. */
-export function buildPackWith(fmt: PackFormat, games: PackGame[], opts: PackBuildOptions = {}): Buffer {
-  checkGames(fmt, games);
-  const parts: Buffer[] = [header(fmt, games.length), ...games.map((g) => fmt.entry(g))];
+export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBuildOptions = {}): Buffer {
+  checkGames(fmt, gamesIn);
+  const games = fmt.arrange ? fmt.arrange(gamesIn) : gamesIn;
+  const parts: Buffer[] = [header(fmt, games), ...games.map((g) => fmt.entry(g))];
   games.forEach((g, i) => {
     parts.push(padBlob(fmt, artBlob(g.art)));
     opts.onProgress?.(i + 1);
@@ -176,23 +200,24 @@ export function buildPackWith(fmt: PackFormat, games: PackGame[], opts: PackBuil
  */
 export async function writePackWith(
   fmt: PackFormat,
-  games: StreamGame[],
-  sink: (chunk: Buffer) => void,
+  gamesIn: StreamGame[],
+  sink: (chunk: Buffer) => void | Promise<void>,
   opts: PackBuildOptions = {},
 ): Promise<number> {
-  checkGames(fmt, games);
+  checkGames(fmt, gamesIn);
+  const games = fmt.arrange ? fmt.arrange(gamesIn) : gamesIn;
   let written = 0;
-  const put = (b: Buffer) => {
-    sink(b);
+  const put = async (b: Buffer) => {
+    await sink(b);
     written += b.length;
   };
-  put(header(fmt, games.length));
-  put(Buffer.concat(games.map((g) => fmt.entry(g))));
+  await put(header(fmt, games));
+  await put(Buffer.concat(games.map((g) => fmt.entry(g))));
   for (let i = 0; i < games.length; i++) {
-    put(padBlob(fmt, await games[i].blob()));
+    await put(padBlob(fmt, await games[i].blob()));
     opts.onProgress?.(i + 1);
   }
-  put(pathStructs(games, opts.logPlatform ?? 'gbc'));
+  await put(pathStructs(games, opts.logPlatform ?? 'gbc'));
   if (written !== packSize(fmt, games.length)) throw new Error('Pack came out the wrong size');
   return written;
 }
@@ -203,7 +228,7 @@ export interface PackWriter {
   /** Most games the format holds. */
   maxGames: number;
   build(games: PackGame[], opts?: PackBuildOptions): Buffer;
-  write(games: StreamGame[], sink: (chunk: Buffer) => void, opts?: PackBuildOptions): Promise<number>;
+  write(games: StreamGame[], sink: (chunk: Buffer) => void | Promise<void>, opts?: PackBuildOptions): Promise<number>;
   expectedSize(count: number): number;
 }
 
@@ -217,6 +242,13 @@ export function makeWriter(fmt: PackFormat): PackWriter {
   };
 }
 
+export interface PackIndex {
+  favCount: number;
+  playedCount: number;
+  /** 27 menu indexes: '#', then A to Z. 0xFFFF where no title starts with that letter. */
+  starts: number[];
+}
+
 export interface PackSummary {
   version: number;
   count: number;
@@ -224,6 +256,8 @@ export interface PackSummary {
   roms: string[];
   /** v7 only. */
   crcs: string[];
+  /** v7 only, when the reserved area starts with "IDX1". */
+  index: PackIndex | null;
 }
 
 /** Read the header and entries back from the start of a pack, for display and checks. */
@@ -242,7 +276,11 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
     roms.push(buf.toString('utf8', o + pathAt, o + ENTRY_BYTES).replace(/\0.*$/s, ''));
     if (version >= 7) crcs.push(buf.readUInt32LE(o + 48).toString(16).toUpperCase().padStart(8, '0'));
   }
-  return { version, count, titles, roms, crcs };
+  let index: PackIndex | null = null;
+  if (version >= 7 && buf.length >= 24 + 27 * 2 && buf.toString('ascii', 16, 20) === 'IDX1') {
+    index = { favCount: buf.readUInt16LE(20), playedCount: buf.readUInt16LE(22), starts: Array.from({ length: 27 }, (_, i) => buf.readUInt16LE(24 + i * 2)) };
+  }
+  return { version, count, titles, roms, crcs, index };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */

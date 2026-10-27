@@ -288,10 +288,15 @@ export function App() {
   const packBytes = packSize(packVersion, Math.min(maxGames, pocketGames.filter((g) => !g.problems.length).length));
   const freeBytes = lib?.card?.freeBytes ?? vol?.freeBytes ?? null;
 
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
   const onFavorite = useCallback(async (g: Game, on: boolean) => {
     setLib((l) => (l ? { ...l, games: l.games.map((x) => (x.crc === g.crc ? { ...x, favorite: on } : x)) } : l));
     try {
       await api.saveChoices({ [g.crc]: { favorite: on } });
+      // A library game whose card copy is kept passes its star on: refresh to show it there too.
+      if (g.cardState === 'cardKept') await loadRef.current(true);
     } catch (e) {
       setToast((e as Error).message);
       setLib((l) => (l ? { ...l, games: l.games.map((x) => (x.crc === g.crc ? { ...x, favorite: !on } : x)) } : l));

@@ -134,6 +134,47 @@ test('resync: nothing to adopt or copy; the kept card copy is still kept', async
   assert.equal(plan.unchanged, 3);
 });
 
+test('the kept card copy takes the library game\'s star, art and title, and can be changed on its own', async () => {
+  // Star the library's Silver, give it a title and a picked image: the card's Silver shows them.
+  const art = { kind: 'thumb' as const, repo: 'Nintendo_-_Game_Boy_Color', name: 'Pokemon - Silver Version (USA, Europe) (SGB Enhanced) (GB Compatible)' };
+  updateChoices({ [SILVER_LIB]: { favorite: true, title: 'Silver (mine)', art } });
+  let lib = await buildLibrary({ library: LIB, card: CARD });
+  let copy = lib.games.find((g) => g.crc === SILVER_CARD)!;
+  assert.equal(copy.origin, 'card');
+  assert.equal(copy.inheritsFrom, SILVER_LIB);
+  assert.equal(copy.favorite, true);
+  assert.equal(copy.title, 'Silver (mine)');
+  assert.deepEqual(copy.art, art);
+  assert.equal(copy.status, 'chosen');
+  // The library game itself shows the star too.
+  assert.equal(lib.games.find((g) => g.crc === SILVER_LIB)!.favorite, true);
+  // In the menu it sits with the favorites (A to Z), right where the library's Silver would be.
+  let { plan } = await makePlan({ library: LIB, card: CARD });
+  assert.deepEqual(plan.pack.titles.slice(0, 2), [HACK, 'Silver (mine)']);
+
+  // Unstar the card copy: stored by its own CRC, and it wins over the library game's star.
+  updateChoices({ [SILVER_CARD]: { favorite: false } });
+  const stored = JSON.parse(fs.readFileSync(path.join(OUT, 'data', 'choices.json'), 'utf8')).games;
+  assert.equal(stored[SILVER_CARD].favorite, false);
+  assert.equal(stored[SILVER_LIB].favorite, true);
+  lib = await buildLibrary({ library: LIB, card: CARD });
+  copy = lib.games.find((g) => g.crc === SILVER_CARD)!;
+  assert.equal(copy.favorite, false);
+  assert.equal(lib.games.find((g) => g.crc === SILVER_LIB)!.favorite, true);
+  ({ plan } = await makePlan({ library: LIB, card: CARD }));
+  assert.deepEqual(plan.pack.titles.slice(0, 1), [HACK]);
+  assert.ok(plan.pack.titles.indexOf('Silver (mine)') > 1);
+
+  // A card only game (the hack) can be unstarred and starred by its own CRC.
+  updateChoices({ [HACK_CRC]: { favorite: false } });
+  lib = await buildLibrary({ library: LIB, card: CARD });
+  assert.equal(lib.games.find((g) => g.crc === HACK_CRC)!.favorite, false);
+  updateChoices({ [HACK_CRC]: { favorite: true }, [SILVER_CARD]: { favorite: null, title: null, art: null }, [SILVER_LIB]: { favorite: null, title: null, art: null } });
+  lib = await buildLibrary({ library: LIB, card: CARD });
+  assert.equal(lib.games.find((g) => g.crc === HACK_CRC)!.favorite, true);
+  assert.equal(lib.games.find((g) => g.crc === SILVER_CARD)!.favorite, false);
+});
+
 test('a game leaving the library: its ROM goes, its save stays, and the plan warns', async () => {
   fs.rmSync(path.join(LIB, 'GBC', 'Zelda.gbc'));
   fs.rmSync(path.join(LIB, 'GB', `${YELLOW}.gb`));

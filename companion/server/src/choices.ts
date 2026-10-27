@@ -11,7 +11,10 @@ export type ArtRef =
 export interface Choice {
   title?: string;
   art?: ArtRef;
-  /** Starred. Favorites come first on the Pocket, after recently played games. */
+  /**
+   * Starred. Favorites come first on the Pocket, after recently played games.
+   * false is kept too: a card copy that inherits a star can be unstarred on its own.
+   */
   favorite?: boolean;
   /**
    * When a ROM you put on the card by hand has this game's file name but is a
@@ -80,9 +83,8 @@ export function updateChoices(patches: Record<string, ChoicePatch>): void {
     }
     if (patch.include === null) delete c.include;
     else if (typeof patch.include === 'boolean') c.include = patch.include;
-    // Only a star is stored; false clears it.
-    if (patch.favorite === null || patch.favorite === false) delete c.favorite;
-    else if (patch.favorite === true) c.favorite = true;
+    if (patch.favorite === null) delete c.favorite;
+    else if (typeof patch.favorite === 'boolean') c.favorite = patch.favorite;
     if (patch.useLibraryCopy === null || patch.useLibraryCopy === false) delete c.useLibraryCopy;
     else if (patch.useLibraryCopy === true) c.useLibraryCopy = true;
     c.updatedAt = new Date().toISOString();

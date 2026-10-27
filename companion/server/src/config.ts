@@ -26,6 +26,9 @@ export const BACKUP_DIR = path.join(CACHE_DIR, 'covers-backups');
 export const PREVIEW_DIR = path.join(CACHE_DIR, 'previews');
 // Each game's art as it goes in the pack (45568 bytes), so a resync does not redo the image work.
 export const BLOB_DIR = path.join(CACHE_DIR, 'pack-art');
+// Tests and demos: pause this many ms per flushed chunk, to act like a slow card.
+export const SLOW_IO_MS = Number(process.env.COMPANION_TEST_SLOW_IO_MS ?? 0) || 0;
+
 // How many old covers.bin copies to keep. A v7 pack for 700 games is about 46 MB.
 export const BACKUPS_KEPT = 5;
 

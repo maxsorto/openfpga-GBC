@@ -28,6 +28,7 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 | | |
 |---|---|
 | Browse | Left and Right glide the covers over 8 frames with an ease-out. Hold to scroll. Long titles scroll as a marquee. |
+| Jump | Up and Down jump to the previous and next letter (and to your favorites at the top). The letter shows under the title. |
 | Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. |
 | Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. |
 | Home | Writes the battery save, writes a save state to a `.sus` file next to it, and goes back to the covers. |
@@ -59,7 +60,7 @@ A local web app: a Node backend that reads your ROM folder and the SD card, and 
 |---|---|
 | Library | Point it at one folder. Every ROM is named by CRC32 against the No-Intro database, and duplicates merge. |
 | Box art | Found in libretro-thumbnails automatically. Click a cover to pick another, search, or drop in your own image. |
-| Favorites | Star games in the app. The Pocket shows them first, then everything else A to Z. |
+| Favorites | Star games in the app. The Pocket shows them first, then everything else A to Z. The pack carries a letter index, so Up and Down jump straight to a letter. |
 | Sync | A plan shows what will be copied, removed and kept, and checks free space first. ROMs are copied, checked by CRC, then renamed into place. The app only removes ROMs it placed, and it never touches saves. |
 | Your card | ROMs already on the card are adopted under their current names, so their saves keep working. A card ROM with the same name as a library game but different contents is kept, because its save is tied to that name. |
 | Themes | DMG, and Game Boy Color with six shells. Atomic Purple shows the board through the plastic. |
@@ -78,7 +79,7 @@ npm start          # opens http://localhost:4390
 2. Open the companion app, pick your ROM folder and the card, and sync. It writes the ROMs and `/Assets/gbc/common/covers.bin`. (`tools/make_cover_pack.py` makes the pack from the command line too.)
 3. Open the core. The menu appears after about a second. It can be turned off in Core Settings, Cover Menu.
 
-Controls in the menu: Left and Right to browse, A to play. In game: L to pause, Up and Down to choose, A to confirm.
+Controls in the menu: Left and Right to browse, Up and Down to jump by letter, A to play. In game: L to pause, Up and Down to choose, A to confirm.
 
 ## How it works
 

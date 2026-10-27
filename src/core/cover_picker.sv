@@ -206,7 +206,8 @@ localparam [6:0]
     S_L1 = 49, S_SETTLE = 50, S_L3 = 52, S_L4 = 53, S_L5 = 54, S_L6 = 55, S_L7 = 56, S_L8 = 57, S_L9 = 58,
     S_L10 = 59, S_L11 = 60, S_LRUN = 61, S_LFAIL = 62, S_PAUSE = 63, S_H0 = 64, S_H1 = 65, S_H2 = 66, S_H3 = 67,
     S_H4 = 68, S_H5 = 69, S_H6 = 70, S_PROBE1 = 71, S_PROBE2 = 72, S_LOAD2 = 73, S_AF0 = 74, S_AF1 = 75, S_AF2 = 76, S_LG2 = 77,
-    S_HDR_C = 78, S_LOADE = 79, S_LOADK = 80, S_AFRT = 81, S_HDR_D = 82, S_HDR_E = 83, S_HDR_F = 84, S_AF0W = 85;
+    S_HDR_C = 78, S_LOADE = 79, S_LOADK = 80, S_AFRT = 81, S_HDR_D = 82, S_HDR_E = 83, S_HDR_F = 84, S_AF0W = 85,
+    S_IDX_REQ = 86, S_IDX_W = 87, S_IDX_RD = 88, S_IDX_RD2 = 89, S_JMP0 = 90, S_JMP1 = 91, S_JMP2 = 92;
 localparam [1:0] PK_ROM = 0, PK_SAV = 1, PK_SUS = 2;
 localparam [12:0] LOG_BYTES = 13'd4096;   // debug log file size
 
@@ -249,6 +250,15 @@ reg  [10:0] af_g = 0;              // art loader: game being fetched
 reg  [6:0]  af_ret = 0;            // art loader: state to return to
 reg  [1:0]  art_try = 0;           // art loader: retries left for this game
 reg         pend_l = 0, pend_r = 0, pend_a = 0;   // presses that arrived while the loader was busy
+reg         pend_u = 0, pend_d = 0;               // Up / Down: jump to the previous / next section
+// letter index (pack v7, header area at offset 16): section 0 = the top of the list (played and favorites),
+// sections 1..27 = the first game whose title starts with '#' (not a letter) or A..Z
+reg  [10:0] sec_start [0:27]; reg [27:0] sec_ok = 0;
+reg         idx_ok = 0;            // the pack has a letter index
+reg  [4:0]  sj = 0;                // section scan / load counter
+reg  [4:0]  jbest = 0, jwrap = 0; reg jhave = 0, jwhave = 0;
+reg         jup = 0;               // this jump goes up
+reg         lbl_on = 0; reg [4:0] lbl_sec = 0;   // platform line shows the section label after a jump
 reg         dbg_art_err = 0, dbg_art_done = 0;   // diagnostics: a refused art read; the art stream finished
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
@@ -355,19 +365,24 @@ end
 
 // platform line, character j
 // mode 0 Game Boy Color, 1 Game Boy, 2 suspended, 3 launch error
-function [7:0] plat_char(input [1:0] m, input [7:0] ec, input [2:0] en, input [5:0] j);
+// mode 4: the section just jumped to (FAVORITES, #, or a letter)
+function [7:0] plat_char(input [2:0] m, input [7:0] ec, input [2:0] en, input [4:0] sec, input [5:0] j);
     reg [111:0] s; reg [3:0] n;
     begin
         case (m)
         0: begin s = "GAME BOY COLOR"; n = 14; end
         1: begin s = {"GAME BOY", 48'd0}; n = 8; end
         2: begin s = {"SUSPENDED", 40'd0}; n = 9; end
+        4: begin
+            if (sec == 0) begin s = {"FAVORITES", 40'd0}; n = 9; end
+            else begin s = {(sec == 1) ? 8'h23 : 8'h40 + {3'd0, sec} - 8'd1, 104'd0}; n = 1; end   // '#', 'A'..'Z'
+        end
         default: begin s = {"ERROR ", ec, 8'h30 + en, 48'd0}; n = 8; end
         endcase
         plat_char = (j < n) ? s[111 - j * 8 -: 8] : 8'd0;
     end
 endfunction
-wire [1:0] pmode = lerr ? 2'd3 : cur_susp ? 2'd2 : is_gb ? 2'd1 : 2'd0;
+wire [2:0] pmode = lerr ? 3'd3 : lbl_on ? 3'd4 : cur_susp ? 3'd2 : is_gb ? 3'd1 : 3'd0;
 
 always @(posedge clk_74a) begin
     done_1                   <= target_dataslot_done;
@@ -386,6 +401,8 @@ always @(posedge clk_74a) begin
     if (step_l) pend_l <= 1;
     if (step_r) pend_r <= 1;
     if (press_a) pend_a <= 1;
+    if (press_up) pend_u <= 1;
+    if (press_dn) pend_d <= 1;
 
     if (state == S_MENU && cont1_key[15:0] == 0) begin if (mt != 28'd250_000_000) mt <= mt + 1'b1; end else mt <= 0;
 
@@ -422,7 +439,50 @@ always @(posedge clk_74a) begin
     end
     S_HDR_D: begin stride <= (pver >= 16'd7) ? 32'd65536 : BLOB_BYTES; blob0 <= ENT_OFF + {14'd0, count, 7'd0}; state <= S_HDR_E; end
     S_HDR_E: begin lay_t <= count * stride; state <= S_HDR_F; end
-    S_HDR_F: begin paths0 <= blob0 + lay_t; state <= S_LOAD; end
+    S_HDR_F: begin paths0 <= blob0 + lay_t; idx_ok <= 0; sec_ok <= 0; state <= (pver >= 16'd7) ? S_IDX_REQ : S_LOAD; end
+    // ---- letter index: 60 bytes from file offset 16 into ent_ram words 200.. ("IDX1", played, favorites, 27 starts)
+    S_IDX_REQ: begin
+        target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= 32'd16;
+        target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd400; target_dataslot_length <= 32'd64;
+        target_dataslot_read <= 1; state <= S_IDX_W;
+    end
+    S_IDX_W: if (done_rise) begin
+        if (target_dataslot_err != 0) state <= S_LOAD;
+        else begin sj <= 0; ent_raddr <= 11'd200; state <= S_IDX_RD; end
+    end
+    S_IDX_RD: begin ent_raddr <= ent_raddr + 1'b1; state <= S_IDX_RD2; end   // two-cycle read latency
+    S_IDX_RD2: begin                                 // ent_q = word 200 + sj
+        ent_raddr <= ent_raddr + 1'b1;
+        case (sj)
+        0: if (ent_q != 16'h4449) state <= S_LOAD;                     // "ID"
+        1: if (ent_q != 16'h3158) state <= S_LOAD;                     // "X1"
+        2: begin sec_start[0] <= 11'd0; sec_ok[0] <= ent_q != 0; end   // played
+        3: if (ent_q != 0) sec_ok[0] <= 1;                             // favorites
+        default: begin
+            sec_start[sj - 5'd3] <= ent_q[10:0];
+            sec_ok[sj - 5'd3] <= ent_q != 16'hFFFF && ent_q[10:0] < count;
+        end
+        endcase
+        sj <= sj + 1'b1;
+        if (sj == 5'd30) begin idx_ok <= 1; state <= S_LOAD; end
+    end
+    // ---- jump: the nearest section start after idx (down) or before it (up), wrapping around the list
+    S_JMP0: begin sj <= 0; jhave <= 0; jwhave <= 0; state <= S_JMP1; end
+    S_JMP1: begin
+        if (sec_ok[sj]) begin
+            if (!jup && sec_start[sj] > idx && (!jhave || sec_start[sj] < sec_start[jbest])) begin jbest <= sj; jhave <= 1; end
+            if ( jup && sec_start[sj] < idx && (!jhave || sec_start[sj] > sec_start[jbest])) begin jbest <= sj; jhave <= 1; end
+            if (!jwhave || (!jup ? sec_start[sj] < sec_start[jwrap] : sec_start[sj] > sec_start[jwrap])) begin jwrap <= sj; jwhave <= 1; end
+        end
+        sj <= sj + 1'b1;
+        if (sj == 5'd27) state <= S_JMP2;
+    end
+    S_JMP2: begin
+        if ((jhave || jwhave) && sec_start[jhave ? jbest : jwrap] != idx) begin
+            idx <= sec_start[jhave ? jbest : jwrap]; lbl_sec <= jhave ? jbest : jwrap; lbl_on <= 1;
+            last_left <= jup; lerr <= 0; tl_target <= 0; state <= S_FADE;
+        end else state <= S_MENU;
+    end
 
     // ---- cover loader: fetch need_g into its cache slot, then return to af_ret
     S_AF0: begin
@@ -491,7 +551,7 @@ always @(posedge clk_74a) begin
     S_MAP_WAIT:  state <= S_MAP_WAIT2;
     S_MAP_WAIT2: state <= S_MAP_CHAR;
     S_MAP_CHAR: begin
-        ch = line2 ? plat_char(pmode, ecode, enum_, k) : (k[0] ? ent_q[15:8] : ent_q[7:0]);
+        ch = line2 ? plat_char(pmode, ecode, enum_, lbl_sec, k) : (k[0] ? ent_q[15:8] : ent_q[7:0]);
         gw = lf ? wrom2[ch[6:0]] : wrom[ch[6:0]];
         if (ch == 0 || k == (line2 ? 6'd14 : 6'd40) || (lf ? mp[8:0] >= 9'd500 : mp[7:0] >= 8'd250)) state <= S_MAP_DONE;
         else if (gw == 0) begin k <= k + 1'b1; state <= S_MAP_FETCH; end
@@ -515,7 +575,7 @@ always @(posedge clk_74a) begin
         else begin
             title_w <= (mp[7:0] == 0) ? 8'd0 : mp[7:0] - 1'b1;   // drop the trailing gap
             if (!menu_active) lflush_req <= 1;          // fresh menu (boot or Home): write the log once it is idle
-            if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; end   // presses from before the menu showed
+            if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; pend_u <= 0; pend_d <= 0; end   // presses from before the menu showed
             gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; state <= S_MENU;
         end
     end
@@ -523,13 +583,16 @@ always @(posedge clk_74a) begin
     S_MENU: begin
         if (!menu_active) begin gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; end
         if (!anim && pend_r && count > 1) begin
-            pend_r <= 0; idx <= next; last_left <= 0; lerr <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE;
+            pend_r <= 0; idx <= next; last_left <= 0; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE;
         end else if (!anim && pend_l && count > 1) begin
-            pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
-        end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
+            pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
+        end else if (!anim && (pend_u || pend_d) && idx_ok && count > 1) begin
+            jup <= pend_u; pend_u <= 0; pend_d <= 0; state <= S_JMP0;
+        end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; lbl_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
         else if (lflush_req && mt == 28'd222_000_000) begin   // 3 s idle: write the debug log to its file
             lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
         end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
+        if (count <= 1 || !idx_ok) begin pend_u <= 0; pend_d <= 0; end
         if (count <= 1) begin pend_l <= 0; pend_r <= 0; end
     end
     S_LG2: begin

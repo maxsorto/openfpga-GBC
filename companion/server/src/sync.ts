@@ -6,17 +6,22 @@
  *   3. Remove ROMs that left the library, only if the manifest says the app placed them
  *      and the file is still the ROM the app put there.
  *   4. Stream covers.bin (v6 or v7, by the core on the card) to a file beside it,
- *      check it, then rename it into place. Write the manifest. Read both back.
+ *      flushing every 2 MB, read it back to check it, then rename it into place.
+ *      Write the manifest and read it back.
+ *
+ * All card I/O is async and chunked (io.ts), so progress reaches the app while a
+ * slow card writes. Files the app renames or removes take their "._" sidecar with them.
  *
  * Only .gb and .gbc files in Assets/gbc/common, covers.bin and cover-picker.json are
  * ever written or removed. Saves (.sav, .sus and everything under Saves) are never touched.
  */
-import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BACKUPS_KEPT, BACKUP_DIR, COVERS_REL, PACK_PLATFORM } from './config.js';
+import fsp from 'node:fs/promises';
+import { BACKUPS_KEPT, BACKUP_DIR, COVERS_REL, PACK_PLATFORM, SLOW_IO_MS } from './config.js';
 import { packBlob } from './art.js';
+import { ChunkedWriter, copyFileChunked, hashFile, isOurPack, rememberWrittenPack, removeAppleDouble, sleep } from './io.js';
 import { cardRomDir } from './library.js';
 import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeManifest, type ManifestEntry } from './manifest.js';
 import { PACK_HEAD_MAX, packWriter, readPackSummary, type StreamGame } from './pack.js';
@@ -28,6 +33,12 @@ export type SyncPhase = 'check' | 'copy' | 'remove' | 'pack' | 'write' | 'verify
 export type SyncEvent =
   | { type: 'phase'; phase: SyncPhase; message: string }
   | { type: 'progress'; done: number; total: number }
+  /**
+   * Bytes done in the current phase: ROMs copied, pack written and flushed,
+   * pack read back, old pack saved. `flushing` is set while the last part of a
+   * file is being flushed to the card, which can take a while on a slow card.
+   */
+  | { type: 'bytes'; phase: SyncPhase; done: number; total: number; flushing?: boolean; label?: string }
   | { type: 'file'; index: number; total: number; file: string; size: number; state: 'copying' | 'verified' | 'removed' | 'kept' | 'adopted'; bytesDone: number; bytesTotal: number }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
   | { type: 'done'; target: string; bytes: number; count: number; copied: number; removed: number; unchanged: number; backup: string | null }
@@ -54,6 +65,8 @@ export function coversPath(root: string): string {
 export interface SyncRequest extends PlanOptions {
   /** The plan the user confirmed. Sync stops if the fresh plan differs. */
   signature?: string;
+  /** Tests: pause this many ms per flushed or read chunk, like a slow card. */
+  slowIoMs?: number;
 }
 
 /** Start a sync in the background. Progress comes as events. */
@@ -78,25 +91,6 @@ export function startSync(req: SyncRequest): SyncJob {
   return job;
 }
 
-/** SHA-256 and size of a file, read 1 MB at a time. */
-export function hashFile(file: string): { sha: string; bytes: number } {
-  const hash = crypto.createHash('sha256');
-  const buf = Buffer.alloc(1 << 20);
-  const fd = fs.openSync(file, 'r');
-  let bytes = 0;
-  try {
-    for (;;) {
-      const n = fs.readSync(fd, buf, 0, buf.length, null);
-      if (n <= 0) break;
-      hash.update(buf.subarray(0, n));
-      bytes += n;
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  return { sha: hash.digest('hex'), bytes };
-}
-
 function readHead(file: string, max: number): Buffer {
   const fd = fs.openSync(file, 'r');
   try {
@@ -109,11 +103,11 @@ function readHead(file: string, max: number): Buffer {
 }
 
 /** Copy the card's covers.bin to the Mac, keeping the last few. */
-function backupCovers(target: string): string {
+async function backupCovers(target: string, onBytes: (n: number) => void): Promise<string> {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = path.join(BACKUP_DIR, `covers-${stamp}.bin`);
-  fs.copyFileSync(target, backup);
+  await copyFileChunked(target, backup, onBytes);
   const old = fs
     .readdirSync(BACKUP_DIR)
     .filter((f) => /^covers-.*\.bin$/.test(f))
@@ -123,31 +117,35 @@ function backupCovers(target: string): string {
 }
 
 /** Copy one ROM to the card and prove it arrived intact. */
-function copyRom(from: string, to: string, crc: string): void {
-  const data = fs.readFileSync(from);
+async function copyRom(from: string, to: string, crc: string, slowMs: number): Promise<void> {
+  const data = await fsp.readFile(from);
   if (crc32(data) !== crc) throw new Error(`${path.basename(from)} changed in the library since the plan. Plan again.`);
   const tmp = path.join(path.dirname(to), `.${path.basename(to)}.part`);
   try {
-    const fd = fs.openSync(tmp, 'w');
+    const fh = await fsp.open(tmp, 'w');
     try {
       let off = 0;
-      while (off < data.length) off += fs.writeSync(fd, data, off, data.length - off);
-      fs.fsyncSync(fd);
+      while (off < data.length) off += (await fh.write(data, off, data.length - off)).bytesWritten;
+      await fh.sync();
     } finally {
-      fs.closeSync(fd);
+      await fh.close();
     }
-    const back = fs.readFileSync(tmp);
+    if (slowMs) await sleep(slowMs);
+    const back = await fsp.readFile(tmp);
     if (back.length !== data.length || crc32(back) !== crc) throw new Error(`Verify failed for ${path.basename(to)}: the copy on the card does not match`);
-    fs.renameSync(tmp, to);
-  } catch (e) {
-    fs.rmSync(tmp, { force: true });
-    throw e;
+    await fsp.rename(tmp, to);
+  } finally {
+    await fsp.rm(tmp, { force: true });
+    removeAppleDouble(tmp);
   }
 }
 
 /** Run a sync and wait for it. Used by startSync and by the tests. */
 export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = () => {}): Promise<SyncPlan> {
+  const slowMs = req.slowIoMs ?? SLOW_IO_MS;
   emit({ type: 'phase', phase: 'check', message: 'Checking the card and the library' });
+  // Let the first event reach the app before the plan is worked out again.
+  await sleep(0);
   const { plan, packGames, manifestPlaced } = await makePlan(req);
   if (req.signature && req.signature !== plan.signature) {
     throw new Error('The library or the card changed since this plan was made. Close this and sync again to see the new plan.');
@@ -192,6 +190,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       if (st?.isFile()) {
         if (fileCrc(abs, st) === entry.crc) {
           fs.unlinkSync(abs);
+          removeAppleDouble(abs);
           emit({ type: 'file', index: i + 1, total: plan.remove.length, file: r.file, size: r.size, state: 'removed', bytesDone: 0, bytesTotal: 0 });
         } else {
           emit({ type: 'log', level: 'warn', message: `${r.file} is no longer the ROM the app placed, so it was kept.` });
@@ -245,19 +244,17 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
         const dir = path.join(BACKUP_DIR, 'replaced-roms');
         fs.mkdirSync(dir, { recursive: true });
         const keep = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')} ${c.file}`);
-        fs.copyFileSync(to, keep);
+        await fsp.copyFile(to, keep);
         emit({ type: 'log', level: 'info', message: `Saved the card's copy of ${c.file} on this Mac: ${keep}` });
       }
-      copyRom(c.from, to, c.crc);
+      await copyRom(c.from, to, c.crc, slowMs);
       rememberCrc(to, c.crc);
       placed.set(c.file.toLowerCase(), { crc: c.crc, file: c.file, size: c.size });
       bytesDone += c.size;
       emit({ type: 'file', index: i + 1, total: plan.copy.length, file: c.file, size: c.size, state: 'verified', bytesDone, bytesTotal });
-      emit({ type: 'progress', done: bytesDone, total: bytesTotal });
+      emit({ type: 'bytes', phase: 'copy', done: bytesDone, total: bytesTotal });
       sinceFlush++;
       flush();
-      // Let the progress stream out between files.
-      await new Promise((r) => setImmediate(r));
     }
     syncDir(romDir);
     flush(true);
@@ -265,18 +262,20 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
 
   if (!plan.space.removeFirst) doRemove();
 
-  // The pack, streamed to a file beside covers.bin: one game's art in memory at a time.
+  // The pack, streamed to a file beside covers.bin: one game's art in memory at a
+  // time, flushed to the card every 2 MB so progress follows the card.
   const writer = packWriter(plan.pack.version);
   const target = coversPath(card);
+  const tmp = path.join(path.dirname(target), '.covers.bin.part');
   let packBytes = 0;
-  let packSha: string | null = null;
   let backup: string | null = null;
   if (packGames.length) {
-    emit({ type: 'phase', phase: 'pack', message: `Building covers.bin (v${writer.version}, ${packGames.length} games)` });
-    const tmp = path.join(path.dirname(target), '.covers.bin.part');
+    const total = writer.expectedSize(packGames.length);
+    emit({ type: 'phase', phase: 'pack', message: `Building and writing covers.bin (pack v${writer.version}, ${packGames.length} games)` });
+    emit({ type: 'bytes', phase: 'pack', done: 0, total });
     try {
-      const hash = crypto.createHash('sha256');
-      const fd = fs.openSync(tmp, 'w');
+      const out = await ChunkedWriter.open(tmp, (n) => emit({ type: 'bytes', phase: 'pack', done: n, total }), slowMs);
+      let written: { bytes: number; sha: string };
       try {
         const games: StreamGame[] = packGames.map((g) => ({
           title: g.title,
@@ -285,6 +284,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
           romSize: g.size,
           crc: g.crc,
           favorite: g.favorite,
+          played: g.lastPlayed != null,
           blob: async () => {
             try {
               return await packBlob(g.art, g.title);
@@ -294,35 +294,49 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
             }
           },
         }));
-        packBytes = await writer.write(
-          games,
-          (chunk) => {
-            let off = 0;
-            while (off < chunk.length) off += fs.writeSync(fd, chunk, off, chunk.length - off);
-            hash.update(chunk);
-          },
-          { logPlatform: PACK_PLATFORM, onProgress: (n) => emit({ type: 'progress', done: n, total: packGames.length }) },
-        );
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
+        await writer.write(games, (chunk) => out.write(chunk), { logPlatform: PACK_PLATFORM });
+        emit({ type: 'bytes', phase: 'pack', done: out.bytesWritten, total, flushing: true, label: 'Flushing to the card' });
+        written = await out.close();
+      } catch (e) {
+        await out.abort();
+        throw e;
       }
-      packSha = hash.digest('hex');
-      if (packBytes !== writer.expectedSize(packGames.length)) throw new Error('Built file has the wrong size');
-      // Check the new file before it replaces the old one.
-      const back = hashFile(tmp);
-      if (back.bytes !== packBytes || back.sha !== packSha) throw new Error('Verify failed: covers.bin did not write correctly. Try again, or use a card reader.');
+      packBytes = written.bytes;
+      emit({ type: 'bytes', phase: 'pack', done: packBytes, total });
+      if (packBytes !== total) throw new Error('Built file has the wrong size');
 
-      emit({ type: 'phase', phase: 'write', message: 'Writing covers.bin and the manifest' });
-      if (fs.existsSync(target)) {
-        if (hashFile(target).sha === packSha) emit({ type: 'log', level: 'info', message: 'covers.bin on the card was already up to date.' });
-        backup = backupCovers(target);
-        emit({ type: 'log', level: 'info', message: `Saved a copy of the old covers.bin on this Mac: ${backup}` });
+      // Read the new file back before it replaces the old one.
+      emit({ type: 'phase', phase: 'verify', message: 'Reading covers.bin back to verify it' });
+      emit({ type: 'bytes', phase: 'verify', done: 0, total });
+      const back = await hashFile(tmp, (n) => emit({ type: 'bytes', phase: 'verify', done: n, total }), slowMs);
+      if (back.bytes !== packBytes || back.sha !== written.sha) {
+        throw new Error('Verify failed: covers.bin did not write correctly. Nothing was replaced. Try again, or use a card reader.');
       }
-      fs.renameSync(tmp, target);
+
+      emit({ type: 'phase', phase: 'write', message: 'Putting covers.bin in place and writing the manifest' });
+      if (fs.existsSync(target)) {
+        if (isOurPack(target)) {
+          emit({ type: 'log', level: 'info', message: 'The old covers.bin was written by this app, so it was not copied to the Mac. It can be built again.' });
+        } else {
+          const oldSize = fs.statSync(target).size;
+          emit({ type: 'bytes', phase: 'write', done: 0, total: oldSize, label: 'Saving the old covers.bin on this Mac' });
+          backup = await backupCovers(target, (n) => emit({ type: 'bytes', phase: 'write', done: n, total: oldSize, label: 'Saving the old covers.bin on this Mac' }));
+          emit({ type: 'log', level: 'info', message: `Saved a copy of the old covers.bin on this Mac: ${backup}` });
+        }
+      }
+      await fsp.rename(tmp, target);
+      removeAppleDouble(tmp);
       syncDir(path.dirname(target));
+      const st = fs.statSync(target);
+      const summary = readPackSummary(readHead(target, PACK_HEAD_MAX));
+      if (st.size !== packBytes || !summary || summary.version !== writer.version || summary.count !== packGames.length) {
+        throw new Error('Verify failed: covers.bin on the card does not match after the rename.');
+      }
+      rememberWrittenPack(target, written.sha);
+      emit({ type: 'log', level: 'info', message: `covers.bin verified: pack v${summary.version}, ${packBytes.toLocaleString()} bytes, ${summary.count} games.` });
     } finally {
-      fs.rmSync(tmp, { force: true });
+      await fsp.rm(tmp, { force: true });
+      removeAppleDouble(tmp);
     }
   } else {
     emit({ type: 'phase', phase: 'write', message: 'Writing the manifest' });
@@ -330,14 +344,6 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   const manifest = { version: 1 as const, placed: [...placed.values()] };
   const manifestText = writeManifest(card, manifest);
 
-  emit({ type: 'phase', phase: 'verify', message: 'Reading back to verify' });
-  if (packSha) {
-    const back = hashFile(target);
-    if (back.bytes !== packBytes || back.sha !== packSha) throw new Error('Verify failed: covers.bin on the card does not match. Try again, or use a card reader.');
-    const summary = readPackSummary(readHead(target, PACK_HEAD_MAX));
-    if (!summary || summary.version !== writer.version || summary.count !== packGames.length) throw new Error('Verify failed: covers.bin header does not match.');
-    emit({ type: 'log', level: 'info', message: `covers.bin verified: v${summary.version}, ${packBytes.toLocaleString()} bytes, ${summary.count} games.` });
-  }
   const mBack = fs.readFileSync(manifestPath(card), 'utf8');
   if (mBack !== manifestText || serializeManifest(readManifest(card).manifest) !== manifestText) {
     throw new Error('Verify failed: cover-picker.json on the card does not match.');

@@ -6,11 +6,11 @@
  */
 import { packV6 } from './pack-v6.js';
 import { packV7 } from './pack-v7.js';
-import type { PackWriter } from './pack-common.js';
+import { letterGroup, type PackWriter } from './pack-common.js';
 
 export * from './pack-common.js';
 export { MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize } from './pack-v6.js';
-export { MAX_GAMES_V7, PACK_V7, STRIDE_V7 } from './pack-v7.js';
+export { MAX_GAMES_V7, NO_SECTION, PACK_V7, STRIDE_V7, letterIndex } from './pack-v7.js';
 
 const WRITERS: Record<number, PackWriter> = { 6: packV6, 7: packV7 };
 
@@ -37,8 +37,16 @@ export interface Orderable {
  */
 export type PlayHistory = Map<string, number>;
 
-/** Alphabetical by title, ignoring case, then by file name. Stable on every Mac. */
+/**
+ * A to Z by title, the way the Pocket's letter index groups games: first the
+ * titles that start with anything but A to Z ('#'), then A, B, ... Z, by the
+ * first character of the title as the pack writes it. Within a letter, by title
+ * ignoring case, then by file name. Stable on every Mac.
+ */
 export function compareTitles(a: Orderable, b: Orderable): number {
+  const ga = letterGroup(a.title);
+  const gb = letterGroup(b.title);
+  if (ga !== gb) return ga - gb;
   const ta = a.title.toLowerCase();
   const tb = b.title.toLowerCase();
   if (ta !== tb) return ta < tb ? -1 : 1;

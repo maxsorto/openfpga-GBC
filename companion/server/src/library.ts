@@ -39,6 +39,11 @@ export interface Game {
   cardState: CardState;
   /** For cardKept and replace: the card's own file with this game's name. */
   cardFile: string | null;
+  /**
+   * For a card copy kept instead of a library game (same name, different CRC): that
+   * library game's CRC. The copy takes its star, art and title unless it has its own.
+   */
+  inheritsFrom: string | null;
   /** File name the ROM has (or will have) on the card. */
   file: string;
   platform: string;
@@ -345,6 +350,14 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
   const [dats, thumbs] = await Promise.all([loadDats(), loadThumbs()]);
   const played = playHistory(card);
 
+  // Card copies kept instead of a library game take that game's choices.
+  const parentOf = new Map<string, string>();
+  for (const [libCrc, p] of placements.byCrc) {
+    if (p.state !== 'cardKept') continue;
+    const h = placements.hand.find((x) => x.file === p.file);
+    if (h) parentOf.set(h.crc, libCrc);
+  }
+
   const makeGame = (crc: string, origin: Game['origin'], name: string, file: string, size: number, paths: string[], sourcePath: string): Game => {
     const placement = placements.byCrc.get(crc);
     const cardState: CardState = origin === 'card' ? 'cardOnly' : !card ? 'none' : (placement?.state ?? 'none');
@@ -352,7 +365,15 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
     const system = file.toLowerCase().endsWith('.gb') ? 'gb' : 'gbc';
     const auto = autoMatchCached(thumbs, stem(name), system, dat);
     const autoArt: ArtRef | null = auto.thumb ? { kind: 'thumb', repo: auto.thumb.repo, name: auto.thumb.name } : null;
-    const choice = choices[crc] ?? {};
+    const own = choices[crc] ?? {};
+    const parentCrc = origin === 'card' ? (parentOf.get(crc) ?? null) : null;
+    const parent = parentCrc ? (choices[parentCrc] ?? {}) : {};
+    // Its own choices first, then the library game it stands in for.
+    const choice = {
+      title: own.title ?? parent.title,
+      art: own.art ?? parent.art,
+      favorite: own.favorite ?? parent.favorite,
+    };
     const defaultTitle = cleanTitle(dat?.name ?? stem(name));
     const title = choice.title ?? defaultTitle;
     const art = choice.art ?? autoArt;
@@ -364,6 +385,7 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
       origin,
       cardState,
       cardFile: cardState === 'cardKept' || cardState === 'replace' ? placement!.file : null,
+      inheritsFrom: parentCrc,
       file,
       platform: PACK_PLATFORM,
       size,
