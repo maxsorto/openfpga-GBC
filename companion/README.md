@@ -279,7 +279,7 @@ is:
 
 | Offset | Size | What |
 | --- | --- | --- |
-| 80 | 4 | `FPR1` |
+| 80 | 4 | `FPR2` |
 | 84 | u32 | File offset of the table |
 | 88 | u16 | Records in it: the pack's entry count, duplicates included |
 | 90 | u16 | 0 |
@@ -288,16 +288,26 @@ The rest of the 512 bytes is zero. v6 keeps all 512 bytes zero.
 
 The table comes right after the `favorites.cfg` path struct, at
 paths0 + (count x 3 + 2) x 256 (on a 4 byte boundary), and ends the file. It has one
-4 byte record per entry, in entry order: ROM bytes `0x14E` and `0x14F` (the global
-checksum, as stored), `0x14D` (the header checksum) and `0x143` (the CGB flag), read
-from that entry's ROM file. A ROM shorter than `0x150` bytes gets four zeros. A
-favorite's two entries have the same record.
+8 byte record per entry, in entry order, read from that entry's ROM file:
+
+| Bytes | What |
+| --- | --- |
+| 0, 1 | ROM bytes `0x14E` and `0x14F`: the global checksum, as stored |
+| 2 | ROM byte `0x14D`: the header checksum |
+| 3 | ROM byte `0x143`: the CGB flag |
+| 4 to 7 | u32 CRC32 (zlib) of the title area, ROM bytes `0x134` to `0x13E` (11 bytes, raw, NULs included, nothing trimmed) |
+
+A ROM shorter than `0x150` bytes gets eight zeros. A favorite's two entries have the
+same record.
 
 ### Play Cartridge
 
 When you choose Play Cartridge in the Pocket menu, the core reads the cart's header and
-looks it up in the fingerprint table. If it matches a game in the pack, it shows that
-game's cover labeled CARTRIDGE, then boots the cart with the cart's own save.
+looks it up in the fingerprint table. It looks for the exact revision first (the
+checksums and CGB flag), then for the title, so a cart that is another revision of a
+game in your library (Pokemon Crystal 1.0 when you have 1.1, say) still shows that
+game's cover. If it finds one, it shows the cover labeled CARTRIDGE, then boots the
+cart with the cart's own save.
 
 The A to Z part is sorted to match: titles that start with anything but a letter (digits,
 punctuation, and characters the pack writes as `?`) come first as `#`, then A to Z, each
@@ -337,12 +347,13 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   saves are matched to ROMs (and flagged when a game leaves), and an empty library folder
   removes nothing.
 - `pack-compat.test.ts` also checks the fingerprint table against the Python tool, with
-  a ROM whose header bytes are known and a ROM shorter than the header.
+  a ROM whose header bytes and title are known (`PM_CRYSTAL`, title CRC32 `0xFB07C0C0`)
+  and a ROM shorter than the header.
 - `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
   give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
   with the favorites at the top and again under their letter (full copies, flags bit 1
   on both), each entry carrying its ROM's CRC32, the `favorites.cfg` path right after
-  the log path, and the fingerprint table (`FPR1` at offset 80, one record per entry
+  the log path, and the fingerprint table (`FPR2` at offset 80, one record per entry
   read from the ROM on the card, the same for both entries of a favorite) ending the
   file; switching the core back gives v6 with 31 and no extras.
 - `progress.test.ts`: a sync with only the pack to write, on a card made slow on purpose,

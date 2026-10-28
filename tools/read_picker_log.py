@@ -3,11 +3,13 @@
 
 The core keeps a ring of 511 eight-byte records and writes it to that file after the menu has sat idle for 3 s
 following boot or Home. Record 0 is a header ("PLOG", next write slot, total records written). Each record is
-tag (S, D or Q), time in units of 4096 cycles of the 74.25 MHz clock, and 32 bits of data:
+tag (S, D, Q, C, H or T), time in units of 4096 cycles of the 74.25 MHz clock, and 32 bits of data:
   S  state change: new state, previous state, last data slot error, open error, game index
   D  diagnostic bits changed (the same bits as the squares along the top of the menu)
   Q  SDRAM sample: the pixel fetched for screen (160, 100) and the low 16 bits of its row base address
   C  the cartridge slot message from the Pocket (APF 0x00B1 payload) changed
+  H  an inserted cart's header: global checksum (0x14E, 0x14F), header checksum (0x14D), version (0x14C)
+  T  that cart's title CRC32 (bytes 0x134..0x13E), the value matched against the pack's FPR2 table
 
 Usage: read_picker_log.py picker.log [cover_picker.sv]
 """
@@ -59,6 +61,10 @@ def main():
             print(f"{t:10.2f} ms  D  {lo & 0xFFFFFF:06x}  [{bits(lo)}]")
         elif tag == "C":
             print(f"{t:10.2f} ms  C  cartridge slot (APF 0x00B1): {lo:08x}  play_cartridge={lo >> 24 & 1}")
+        elif tag == "H":
+            print(f"{t:10.2f} ms  H  cart header: global checksum {lo >> 16:04x}  header checksum {lo >> 8 & 0xFF:02x}  version {lo & 0xFF:02x}")
+        elif tag == "T":
+            print(f"{t:10.2f} ms  T  cart title CRC32 {lo:08x}")
         elif tag == "Q":
             print(f"{t:10.2f} ms  Q  row base ..{lo >> 16:04x}  pixel {lo & 0xFFFF:04x}")
         else:

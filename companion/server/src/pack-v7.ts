@@ -20,10 +20,12 @@
  * After the picker.log path struct comes one more: /Saves/<platform>/common/favorites.cfg.
  *
  * Cartridge fingerprints, for Play Cartridge: at file offset 80 (in the reserved area,
- * after the letter index) "FPR1" | u32 file offset of the table | u16 entry count | u16 0.
+ * after the letter index) "FPR2" | u32 file offset of the table | u16 entry count | u16 0.
  * The table follows the favorites.cfg path struct, on a 4 byte boundary, and ends the
- * file: one 4 byte record per entry, in entry order, duplicates included: ROM bytes
- * 0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag).
+ * file: one 8 byte record per entry, in entry order, duplicates included: ROM bytes
+ * 0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag), then the
+ * u32 LE CRC32 of the 11 byte title area 0x134 to 0x13E. The core matches the exact
+ * revision on the first four bytes, then falls back to the title CRC.
  * The rest of the layout is in pack-common.ts.
  */
 import {
@@ -39,9 +41,9 @@ import {
   type PackFormat,
 } from './pack-common.js';
 
-/** File offset of "FPR1" in the reserved area. */
+/** File offset of "FPR2" in the reserved area. */
 export const FPR_OFFSET = 80;
-export const FINGERPRINT_BYTES = 4;
+export const FINGERPRINT_BYTES = 8;
 
 const align4 = (n: number) => (n + 3) & ~3;
 
@@ -137,7 +139,7 @@ export const formatV7: PackFormat = {
     idx.starts.forEach((s, i) => r.writeUInt16LE(s, 8 + i * 2));
     // Where Play Cartridge finds the fingerprint table.
     const at = FPR_OFFSET - 16;
-    r.write('FPR1', at, 'ascii');
+    r.write('FPR2', at, 'ascii');
     r.writeUInt32LE(align4(tailStart(formatV7, games.length)), at + 4);
     r.writeUInt16LE(games.length, at + 8);
     r.writeUInt16LE(0, at + 10);

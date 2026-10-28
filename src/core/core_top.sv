@@ -343,7 +343,7 @@ wire    [31:0]  target_dataslot_length;
 wire            picker_hold_gb;             // cover picker: Game Boy held in reset
 // cover picker hi-res menu: SDRAM read port (clk_sys), art loading, video
 wire            picker_sd_own, picker_sd_oe, picker_sd_we, picker_art_load;
-wire            picker_cprobe_req, picker_cart_mode;
+wire            picker_cprobe_req, picker_cart_mode, picker_cart_safe;
 wire     [15:0] picker_sd_wd;
 reg      [15:0] picker_dbg = 0;            // cover picker diagnostics (see the end of this file)
 wire    [23:0]  picker_sd_addr;
@@ -827,12 +827,17 @@ always_ff @(posedge clk_sys) begin
   end
 end
 
+// With a game cart in the (always powered) slot, the pins idle like a real Game Boy's bus outside cartridge mode:
+// address 0, /RD /WR /CS high, and the rumble logic kept off the write line.
+wire cart_idle_safe = picker_cart_safe & ~cart_physical_mode & ~cprobe_act;
 assign cart_tran_bank3     = cprobe_act ? cprobe_addr[7:0] :
-                             cart_access ? cart_addr[7:0] : {6'hzz, rumble_cart_rumble, 1'bz};
+                             cart_access ? cart_addr[7:0] :
+                             cart_idle_safe ? 8'h00 : {6'hzz, rumble_cart_rumble, 1'bz};
 assign cart_tran_bank3_dir = 1'b1;
 
-assign cart_tran_bank2     = cprobe_act ? cprobe_addr[15:8] : cart_physical_mode ? {cart_a15, cart_addr[14:8]} : 8'hzz;
-assign cart_tran_bank2_dir = cart_physical_mode | cprobe_act;
+assign cart_tran_bank2     = cprobe_act ? cprobe_addr[15:8] : cart_physical_mode ? {cart_a15, cart_addr[14:8]} :
+                             cart_idle_safe ? 8'h00 : 8'hzz;
+assign cart_tran_bank2_dir = cart_physical_mode | cprobe_act | cart_idle_safe;
 
 assign cart_tran_bank1     = cart_write_access ? cart_di : 8'hzz;
 assign cart_tran_bank1_dir = cart_write_access;
@@ -842,7 +847,7 @@ assign cart_tran_bank0     = (cart_physical_mode | cprobe_act)
                               cprobe_act ? 1'b1 : cart_access ? ~cart_wr : rumble_cart_wr,
                               cprobe_act ? 1'b0 : cart_access ? cart_wr : 1'b1,
                               cprobe_act ? 1'b1 : cart_access ? nCS : 1'b1}
-                           : {1'bz, rumble_cart_wr, 2'hz};
+                           : cart_idle_safe ? 4'b1111 : {1'bz, rumble_cart_wr, 2'hz};
 assign cart_tran_bank0_dir = 1'b1;
 
 assign cart_tran_pin30       = 1'b0;
@@ -1363,6 +1368,7 @@ cover_picker cover_picker (
   .cart_play                  ( osnotify_adapter_play      ),
   .cprobe_req                 ( picker_cprobe_req          ),
   .cart_mode                  ( picker_cart_mode           ),
+  .cart_safe                  ( picker_cart_safe           ),
   .cprobe_done                ( cprobe_done_t              ),
   .cart_hdr                   ( cart_hdr_r                 ),
   .art_load                   ( picker_art_load            ),

@@ -13,9 +13,10 @@ v7 (--v7): ver = 7, up to 2047 games, entries are title char[40] | flags u8 | pa
 path char[76], and each blob is padded to 65536 B so the core can stream any cover by index.
 Entry flags: bit 0 = original Game Boy, bit 1 = favorite (this tool has no favorites, so bit 1 is 0).
 After the picker.log path struct, v7 has one more: /Saves/<platform>/common/favorites.cfg.
-v7 cartridge fingerprints, for Play Cartridge: at file offset 80, "FPR1" | u32 table offset | u16 entry count | u16 0.
-The table follows the favorites.cfg struct on a 4 byte boundary and ends the file: per entry, ROM bytes
-0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag); 4 zeros if the ROM is shorter than 0x150.
+v7 cartridge fingerprints, for Play Cartridge: at file offset 80, "FPR2" | u32 table offset | u16 entry count | u16 0.
+The table follows the favorites.cfg struct on a 4 byte boundary and ends the file: 8 bytes per entry, ROM bytes
+0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag), then u32 LE zlib CRC32 of the 11 byte
+title area 0x134..0x13E; 8 zeros if the ROM is shorter than 0x150. The core matches the revision, then the title.
 v7 games are in letter order: titles that start with anything but A to Z first ('#'), then A to Z, each
 group sorted by title ignoring case. The reserved area then starts with a letter index for Up/Down jumps:
   16  "IDX1"   20  fav_count u16   22  played_count u16   24  27 x u16 section starts
@@ -53,12 +54,13 @@ def index_block(stems, fav_count=0, played_count=0):
     assert present == sorted(present), "letter sections must be in order"
     return struct.pack("<4sHH27H", b"IDX1", fav_count, played_count, *starts).ljust(512, b"\0")
 
-FPR_AT = 80  # file offset of "FPR1", in the reserved area after the letter index
+FPR_AT = 80  # file offset of "FPR2", in the reserved area after the letter index
 
 def fingerprint(path):
-    """Cart header bytes Play Cartridge matches on: 0x14E, 0x14F, 0x14D, 0x143."""
+    """What Play Cartridge matches on: header bytes 0x14E, 0x14F, 0x14D, 0x143, then the title area's CRC32."""
     with open(path, "rb") as f: h = f.read(0x150)
-    return bytes([h[0x14E], h[0x14F], h[0x14D], h[0x143]]) if len(h) >= 0x150 else bytes(4)
+    if len(h) < 0x150: return bytes(8)
+    return bytes([h[0x14E], h[0x14F], h[0x14D], h[0x143]]) + struct.pack("<I", zlib.crc32(h[0x134:0x13F]) & 0xFFFFFFFF)
 
 def rgb565(rgb): r, g, b = rgb; return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
 
@@ -116,7 +118,7 @@ def main():
     reserved = bytes(512)
     if a.v7:
         reserved = bytearray(index_block([os.path.splitext(r)[0] for r in roms]))
-        reserved[FPR_AT - 16:FPR_AT - 16 + 12] = struct.pack("<4sIHH", b"FPR1", table_at, n, 0)
+        reserved[FPR_AT - 16:FPR_AT - 16 + 12] = struct.pack("<4sIHH", b"FPR2", table_at, n, 0)
     with open(a.out, "wb") as f:
         f.write(struct.pack("<4sHHHH4x", b"GBCV", 7 if a.v7 else 6, len(roms), CEN, TH))
         f.write(bytes(reserved))

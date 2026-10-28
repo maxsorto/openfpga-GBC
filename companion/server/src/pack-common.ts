@@ -34,9 +34,10 @@ export interface PackEntry {
    */
   section?: MenuSection;
   /**
-   * Cartridge fingerprint, read from the ROM file: bytes 0x14E, 0x14F (global
-   * checksum), 0x14D (header checksum), 0x143 (CGB flag). Zeros for a ROM shorter
-   * than 0x150 bytes. v7 stores one per entry so Play Cartridge can find the cover.
+   * Cartridge fingerprint, 8 bytes read from the ROM file: bytes 0x14E, 0x14F
+   * (global checksum), 0x14D (header checksum), 0x143 (CGB flag), then the u32 LE
+   * CRC32 of the title area 0x134 to 0x13E. Zeros for a ROM shorter than 0x150 bytes.
+   * v7 stores one per entry so Play Cartridge can find the cover.
    */
   fingerprint?: Buffer;
 }
@@ -293,7 +294,7 @@ export interface PackSummary {
   flags: number[];
   /** v7 only, when the reserved area starts with "IDX1". */
   index: PackIndex | null;
-  /** v7 only: where the cartridge fingerprint table is ("FPR1" at file offset 80). */
+  /** v7 only: where the cartridge fingerprint table is ("FPR2" at file offset 80). */
   fingerprints: { offset: number; count: number } | null;
 }
 
@@ -320,7 +321,7 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
     index = { favCount: buf.readUInt16LE(20), playedCount: buf.readUInt16LE(22), starts: Array.from({ length: 27 }, (_, i) => buf.readUInt16LE(24 + i * 2)) };
   }
   let fingerprints: PackSummary['fingerprints'] = null;
-  if (version >= 7 && buf.length >= 92 && buf.toString('ascii', 80, 84) === 'FPR1') {
+  if (version >= 7 && buf.length >= 92 && buf.toString('ascii', 80, 84) === 'FPR2') {
     fingerprints = { offset: buf.readUInt32LE(84), count: buf.readUInt16LE(88) };
   }
   return { version, count, titles, roms, crcs, flags, index, fingerprints };

@@ -207,7 +207,7 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
   assert.ok(biggest <= Math.max(STRIDE_V7, 40 * 3 * 256 + 256), `largest chunk ${biggest}`);
 });
 
-test('pack v7 fingerprints match make_cover_pack.py --v7, including a ROM shorter than the header', async () => {
+test('pack v7 fingerprints (FPR2) match make_cover_pack.py --v7, with a known title and a ROM shorter than the header', async () => {
   const f = makeFixture(
     'v7-fingerprints',
     [
@@ -219,8 +219,10 @@ test('pack v7 fingerprints match make_cover_pack.py --v7, including a ROM shorte
       ['Tiny.png', 90, 80],
     ],
   );
-  // Known cart header bytes: CGB flag 0x80, header checksum 0xAB, global checksum 0x1234.
+  // Known cart header bytes: title "PM_CRYSTAL" (11 bytes with its NUL), CGB flag 0x80,
+  // header checksum 0xAB, global checksum 0x1234.
   const rom = fs.readFileSync(path.join(f.roms, 'Known Header.gbc'));
+  Buffer.from('PM_CRYSTAL\0', 'latin1').copy(rom, 0x134);
   rom[0x143] = 0x80;
   rom[0x14d] = 0xab;
   rom[0x14e] = 0x12;
@@ -230,9 +232,11 @@ test('pack v7 fingerprints match make_cover_pack.py --v7, including a ROM shorte
   const ts = packWriter(7).build(letterOrder(await tsGames(f, 2047)));
   assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
   const s = readPackSummary(ts)!;
-  assert.deepEqual(s.fingerprints, { offset: ts.length - 2 * 4, count: 2 });
-  const rec = (i: number) => [...ts.subarray(s.fingerprints!.offset + i * 4, s.fingerprints!.offset + i * 4 + 4)];
+  assert.equal(ts.toString('ascii', 80, 84), 'FPR2');
+  assert.deepEqual(s.fingerprints, { offset: ts.length - 2 * 8, count: 2 });
+  const rec = (i: number) => [...ts.subarray(s.fingerprints!.offset + i * 8, s.fingerprints!.offset + i * 8 + 8)];
   assert.deepEqual(s.titles, ['Known Header', 'Tiny']);
-  assert.deepEqual(rec(0), [0x12, 0x34, 0xab, 0x80]);
-  assert.deepEqual(rec(1), [0, 0, 0, 0]);
+  // zlib CRC32 of b"PM_CRYSTAL\0" is 0xFB07C0C0, stored little-endian.
+  assert.deepEqual(rec(0), [0x12, 0x34, 0xab, 0x80, 0xc0, 0xc0, 0x07, 0xfb]);
+  assert.deepEqual(rec(1), [0, 0, 0, 0, 0, 0, 0, 0]);
 });

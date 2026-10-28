@@ -39,8 +39,8 @@ export function packBytes(version: number, count: number): number {
   if (count <= 0) return 0;
   const stride = version >= 7 ? 65536 : (128 * 128 + 80 * 80) * 2;
   const base = 16 + 512 + count * (128 + stride + 3 * 256) + 256;
-  // v7 adds the favorites.cfg path struct and a 4 byte cartridge fingerprint per entry.
-  return version >= 7 ? base + 256 + count * 4 : base;
+  // v7 adds the favorites.cfg path struct and an 8 byte cartridge fingerprint per entry.
+  return version >= 7 ? base + 256 + count * 8 : base;
 }
 
 /** "star, cover and title" */

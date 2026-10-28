@@ -217,9 +217,11 @@ export function scanLibrary(rootIn: string): LibraryScan {
 }
 
 /**
- * Cartridge fingerprint of a ROM file: bytes 0x14E, 0x14F (global checksum),
- * 0x14D (header checksum) and 0x143 (CGB flag), as Play Cartridge reads them from a
- * cart. Four zeros for a file shorter than 0x150 bytes or one that can not be read.
+ * Cartridge fingerprint of a ROM file, as Play Cartridge reads it from a cart:
+ * bytes 0x14E, 0x14F (global checksum), 0x14D (header checksum) and 0x143 (CGB
+ * flag), then the u32 LE CRC32 of the title area 0x134 to 0x13E (11 bytes, raw).
+ * The title CRC lets another revision of the same game still find its cover.
+ * Eight zeros for a file shorter than 0x150 bytes or one that can not be read.
  */
 export function romFingerprint(file: string): Buffer {
   const head = Buffer.alloc(0x150);
@@ -234,6 +236,8 @@ export function romFingerprint(file: string): Buffer {
   } catch {
     n = 0;
   }
-  if (n < 0x150) return Buffer.alloc(4);
-  return Buffer.from([head[0x14e], head[0x14f], head[0x14d], head[0x143]]);
+  if (n < 0x150) return Buffer.alloc(8);
+  const out = Buffer.from([head[0x14e], head[0x14f], head[0x14d], head[0x143], 0, 0, 0, 0]);
+  out.writeUInt32LE(parseInt(crc32(head.subarray(0x134, 0x13f)), 16) >>> 0, 4);
+  return out;
 }
