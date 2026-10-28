@@ -18,7 +18,7 @@ module tb_cart;
   wire sd_we; wire [15:0] sd_wd; reg art_wr = 0; reg [23:0] art_waddr = 0; reg [15:0] art_wdata = 0;
   reg sd_ce = 0; integer cdiv = 0;
   always @(posedge clk_sys) begin cdiv <= (cdiv + 1) % 4; sd_ce <= (cdiv == 0); end
-  wire cprobe_req; reg cprobe_done = 0; reg [223:0] cart_hdr;
+  wire cprobe_req, cart_mode; reg cprobe_done = 0; reg [223:0] cart_hdr;
   cover_picker #(.CB(7)) dut (.clk_74a(clk), .enable(1'b1), .core_ready(core_ready), .cont1_key(cont1_key),
     .pack_wr(pack_wr), .pack_addr(pack_addr), .pack_data(pack_data),
     .target_dataslot_read(t_read), .target_dataslot_openfile(t_open), .target_dataslot_write(t_write),
@@ -29,7 +29,7 @@ module tb_cart;
     .ss_start_ok(1'b0), .ss_load_ok(1'b0), .sav_bytes(32'd0), .ss_bytes(32'd0), .ovl_dim(ovl_dim),
     .snd_open(), .snd_close(), .picker_download(), .picker_reset(),
     .clk_sys(clk_sys), .sd_ce(sd_ce), .sd_own(sd_own), .sd_addr(sd_addr), .sd_oe(sd_oe), .sd_we(sd_we), .sd_wd(sd_wd), .sd_q(sd_q),
-    .art_wr(art_wr), .art_waddr(art_waddr), .art_wdata(art_wdata), .dbg(16'hA5C3), .cart_notify(32'h01000000), .cart_play(1'b1), .cprobe_req(cprobe_req), .cprobe_done(cprobe_done), .cart_hdr(cart_hdr),
+    .art_wr(art_wr), .art_waddr(art_waddr), .art_wdata(art_wdata), .dbg(16'hA5C3), .cart_notify(32'h01000000), .cart_play(1'b0), .cart_mode(cart_mode), .cprobe_req(cprobe_req), .cprobe_done(cprobe_done), .cart_hdr(cart_hdr),
     .art_load(art_load), .hr_mode(hr_mode), .hr_de(hr_de), .hr_hs(hr_hs), .hr_vs(hr_vs), .hr_rgb(hr_rgb),
     .clk_vid(clk_vid), .de(1'b0), .hs(1'b0), .vs(1'b0), .menu_rgb(menu_rgb), .menu_on(menu_on));
 
@@ -127,14 +127,16 @@ module tb_cart;
   initial begin
     force dut.boot_timer = 27'd36_999_990; #100 core_ready = 1; #2000 release dut.boot_timer;
     wait (dut.state == 23 && dut.level == 8);
-    $display("cart_view %0d idx %0d hold_gb %0d", dut.cart_view, dut.idx, hold_gb);
-    if (!dut.cart_view || dut.idx != 5 || !hold_gb) errs = errs + 1;
-    repeat (2) @(posedge hr_vs);
-    $display("platform mode %0d (6 = CARTRIDGE)", dut.pmode);
-    if (dut.pmode != 6) errs = errs + 1;
-    press(3); $display("RIGHT ignored: idx %0d", dut.idx); if (dut.idx != 5) errs = errs + 1;
-    press(4); $display("A: state %0d hold_gb %0d menu %0d", dut.state, hold_gb, dut.menu_active);
-    if (dut.state != 120 || hold_gb) errs = errs + 1;
+    $display("normal launch: cart_view %0d cart_found %0d idx %0d", dut.cart_view, dut.cart_found, dut.idx);
+    if (!dut.cart_view || !dut.cart_found || dut.idx != 5) errs = errs + 1;
+    press(3); $display("RIGHT: cart_view %0d idx %0d label %0d", dut.cart_view, dut.idx, dut.lbl_sec);
+    if (dut.cart_view || dut.idx != 0) errs = errs + 1;
+    press(14); $display("SELECT: fav_mode %0d cart_view %0d", dut.fav_mode, dut.cart_view);
+    if (!dut.fav_mode || dut.cart_view) errs = errs + 1;
+    press(14); $display("SELECT: fav_mode %0d cart_view %0d idx %0d", dut.fav_mode, dut.cart_view, dut.idx);
+    if (dut.fav_mode || !dut.cart_view || dut.idx != 5) errs = errs + 1;
+    press(4); $display("A: state %0d cart_mode %0d hold_gb %0d", dut.state, cart_mode, hold_gb);
+    if (dut.state != 120 || !cart_mode || hold_gb) errs = errs + 1;
     $display("RESULT %s (%0d errors)", errs == 0 ? "PASS" : "FAIL", errs);
     $finish;
   end

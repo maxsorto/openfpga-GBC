@@ -14,3 +14,7 @@ sgb_boot.bin
 
 # simulation pack images
 tools/sim/*.hex
+
+# the core folders are named like ROM extensions on case-insensitive disks; keep them tracked
+!pkg/gbc/Cores/budude2.GBC/
+!pkg/gb/Cores/budude2.GB/

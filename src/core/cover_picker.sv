@@ -92,6 +92,7 @@ module cover_picker #(
     input  wire [31:0] cart_notify,      // clk_74a: last APF 0x00B1 (cartridge adapter) payload, for the debug log
     input  wire        cart_play,        // clk_74a: the user chose Play Cartridge (cart slot powered, physical mode)
     output reg         cprobe_req = 0,   // toggle: read the cart header (core_top, clk_sys)
+    output reg         cart_mode = 0,    // clk_74a: the Game Boy plays the inserted cart (physical mode)
     input  wire        cprobe_done,      // toggle from clk_sys: cart_hdr is valid
     input  wire [223:0] cart_hdr,        // cart bytes 0x134..0x14F, byte i at [8i +: 8]
     output reg         art_load = 0,     // clk_74a: cover art is streaming into SDRAM through the cart loader
@@ -258,6 +259,7 @@ reg         fav_mode = 0;          // Select: only the favorites at the top of t
 // Play Cartridge: the cart's header is read and looked up in the pack's fingerprint table (FPR1)
 reg         cart_view = 0;         // showing the inserted cartridge's cover (A boots the cart)
 reg         cart_checked = 0;
+reg         cart_found = 0; reg [10:0] cart_idx = 0;   // a cart we own is inserted, and its pack entry
 reg  [2:0]  cpd_s = 0;
 reg  [31:0] fp_off = 0; reg [10:0] fp_cnt = 0, fp_ck = 0, fp_n = 0, fp_j = 0;
 reg  [15:0] fp_w0 = 0;
@@ -306,6 +308,7 @@ reg         dbg_art_err = 0, dbg_art_done = 0;   // diagnostics: a refused art r
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
 wire        done_rise = target_dataslot_done & ~done_1;
+wire [6:0]  cp_none = cart_play ? S_CRUN0 : S_LOAD;   // no cart we own: Play Cartridge boots it anyway, else the list
 
 wire [10:0] ebase = 11'd8;          // the selected game's entry is read to word 8 (after the 16 byte header)
 // browsing range: the whole list, or (Select) only the favorites section at the top
@@ -411,28 +414,28 @@ end
 // mode 5: the options menu, opt 0 Play, 1 Start over, 2 favorite on/off, 3 Back
 function [7:0] plat_char(input [2:0] m, input [7:0] ec, input [2:0] en, input [4:0] sec, input [1:0] opt, input fav,
                          input [5:0] j);
-    reg [159:0] s; reg [4:0] n;
+    reg [191:0] s; reg [4:0] n;
     begin
         case (m)
-        0: begin s = {"GAME BOY COLOR", 48'd0}; n = 14; end
-        1: begin s = {"GAME BOY", 96'd0}; n = 8; end
-        2: begin s = {"SUSPENDED", 88'd0}; n = 9; end
+        0: begin s = {"GAME BOY COLOR", 80'd0}; n = 14; end
+        1: begin s = {"GAME BOY", 128'd0}; n = 8; end
+        2: begin s = {"SUSPENDED", 120'd0}; n = 9; end
         4: begin
-            if (sec == 0) begin s = {"FAVORITES", 88'd0}; n = 9; end
-            else if (sec == 28) begin s = {"ALL GAMES", 88'd0}; n = 9; end
-            else begin s = {(sec == 1) ? 8'h23 : 8'h40 + {3'd0, sec} - 8'd1, 152'd0}; n = 1; end   // '#', 'A'..'Z'
+            if (sec == 0) begin s = {"FAVORITES", 120'd0}; n = 9; end
+            else if (sec == 28) begin s = {"ALL GAMES", 120'd0}; n = 9; end
+            else begin s = {(sec == 1) ? 8'h23 : 8'h40 + {3'd0, sec} - 8'd1, 184'd0}; n = 1; end   // '#', 'A'..'Z'
         end
         5: case (opt)
-            0: begin s = {"< PLAY >", 96'd0}; n = 8; end
-            1: begin s = {"< START OVER >", 48'd0}; n = 14; end
-            2: if (fav) begin s = {"< UNFAVORITE >", 48'd0}; n = 14; end
-               else begin s = "< ADD TO FAVORITES >"; n = 20; end
-            default: begin s = {"< BACK >", 96'd0}; n = 8; end
+            0: begin s = {"< PLAY >", 128'd0}; n = 8; end
+            1: begin s = {"< START OVER >", 80'd0}; n = 14; end
+            2: if (fav) begin s = {"< UNFAVORITE >", 80'd0}; n = 14; end
+               else begin s = {"< ADD TO FAVORITES >", 32'd0}; n = 20; end
+            default: begin s = {"< BACK >", 128'd0}; n = 8; end
            endcase
-        6: begin s = {"CARTRIDGE", 88'd0}; n = 9; end
-        default: begin s = {"ERROR ", ec, 8'h30 + en, 96'd0}; n = 8; end
+        6: begin s = {"CARTRIDGE, KEEP IT IN", 24'd0}; n = 21; end
+        default: begin s = {"ERROR ", ec, 8'h30 + en, 128'd0}; n = 8; end
         endcase
-        plat_char = (j < n) ? s[159 - j * 8 -: 8] : 8'd0;
+        plat_char = (j < n) ? s[191 - j * 8 -: 8] : 8'd0;
     end
 endfunction
 wire [2:0] pmode = lerr ? 3'd3 : cart_view ? 3'd6 : gm_on ? 3'd5 : lbl_on ? 3'd4 : cur_susp ? 3'd2 : is_gb ? 3'd1 : 3'd0;
@@ -473,7 +476,7 @@ always @(posedge clk_74a) begin
     S_BOOT: begin
         // hold the Game Boy explicitly: the power-up value of hold_gb is not reliable on hardware (seen low in build 14)
         menu_active <= 0; picker_download <= 0; game_loaded <= 0; idx <= 0; level_target <= 0; hold_gb <= 1;
-        art_load <= 0;
+        art_load <= 0; cart_mode <= 0; cart_found <= 0; cart_view <= 0; cart_checked <= 0;
         // clear the per-game suspend table and the cover cache tags (power-up contents are not trusted)
         if (clr != 12'd2048) begin
             if (clr < (12'd1 << CB)) begin tag_we <= 1; tag_wa <= clr[CB-1:0]; tag_wd <= 12'd0; end
@@ -610,24 +613,24 @@ always @(posedge clk_74a) begin
     S_CP1: begin
         tmr <= tmr + 1'b1;
         if (cpd_s[2] != cpd_s[1]) state <= S_CP2;
-        else if (tmr == 28'd3_700_000) state <= S_CRUN0;                     // 50 ms: no answer, just play
+        else if (tmr == 28'd3_700_000) state <= cp_none;                     // 50 ms: no answer, just play
     end
-    S_CP2: if (!hdr_ok(cart_hdr) || pver < 16'd7) state <= S_CRUN0;
+    S_CP2: if (!hdr_ok(cart_hdr) || pver < 16'd7) state <= cp_none;
            else begin
                target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= 32'd80;
                target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd1000; target_dataslot_length <= 32'd12;
                target_dataslot_read <= 1; op_ret <= S_CP3; state <= S_XFER_W;
            end
-    S_CP3: if (xerr != 0) state <= S_CRUN0; else begin sj <= 0; ent_raddr <= 11'd500; state <= S_CP4; end
+    S_CP3: if (xerr != 0) state <= cp_none; else begin sj <= 0; ent_raddr <= 11'd500; state <= S_CP4; end
     S_CP4: begin                                     // words 500..504: "FP" "R1" offset lo, offset hi, count
         ent_raddr <= ent_raddr + 1'b1; sj <= sj + 1'b1;
-        if (sj == 5'd1 && ent_q != 16'h5046) state <= S_CRUN0;
-        if (sj == 5'd2 && ent_q != 16'h3152) state <= S_CRUN0;
+        if (sj == 5'd1 && ent_q != 16'h5046) state <= cp_none;
+        if (sj == 5'd2 && ent_q != 16'h3152) state <= cp_none;
         if (sj == 5'd3) fp_off[15:0] <= ent_q;
         if (sj == 5'd4) fp_off[31:16] <= ent_q;
         if (sj == 5'd5) begin fp_cnt <= (ent_q > count) ? count : ent_q[10:0]; fp_ck <= 0; state <= S_CP5; end
     end
-    S_CP5: if (fp_ck >= fp_cnt) state <= S_CRUN0;     // searched everything: not in the pack
+    S_CP5: if (fp_ck >= fp_cnt) state <= cp_none;     // searched everything: not in the pack
            else begin                                // the next 512 records into words 1024..2047
                fp_n <= (fp_cnt - fp_ck > 11'd512) ? 11'd512 : fp_cnt - fp_ck;
                target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= fp_off + {19'd0, fp_ck, 2'b00};
@@ -635,7 +638,7 @@ always @(posedge clk_74a) begin
                target_dataslot_length <= ((fp_cnt - fp_ck > 11'd512) ? 32'd2048 : {19'd0, fp_cnt - fp_ck, 2'b00});
                target_dataslot_read <= 1; op_ret <= S_CP6; state <= S_XFER_W;
            end
-    S_CP6: if (xerr != 0) state <= S_CRUN0; else begin fp_j <= 0; ent_raddr <= 11'd1024; state <= S_CP7; end
+    S_CP6: if (xerr != 0) state <= cp_none; else begin fp_j <= 0; ent_raddr <= 11'd1024; state <= S_CP7; end
     S_CP7: begin ent_raddr <= 11'd1025 + {fp_j[9:0], 1'b0}; state <= S_CP8; end        // record fp_j: two words
     S_CP8: begin fp_w0 <= ent_q; state <= S_CP9; end                                    // {0x14F, 0x14E}
     S_CP9: begin                                                                        // ent_q = {0x143, 0x14D}
@@ -643,11 +646,11 @@ always @(posedge clk_74a) begin
         else if (fp_j + 1'b1 == fp_n) begin fp_ck <= fp_ck + fp_n; state <= S_CP5; end
         else begin fp_j <= fp_j + 1'b1; ent_raddr <= 11'd1024 + {fp_j[9:0] + 10'd1, 1'b0}; state <= S_CP7; end
     end
-    S_CPM: begin idx <= fp_ck + fp_j; cart_view <= 1; state <= S_LOAD; end           // the cart is a game we own
+    S_CPM: begin idx <= fp_ck + fp_j; cart_idx <= fp_ck + fp_j; cart_found <= 1; cart_view <= 1; state <= S_LOAD; end   // a cart we own
     S_CRUN0: begin                                   // boot the cart: the Game Boy runs it in physical mode
         level_target <= 0;
         if (level == 0) begin
-            cart_view <= 0; menu_active <= 0; game_loaded <= 1; picker_reset <= 1; hold_gb <= 0; state <= S_CRUN;
+            cart_view <= 0; cart_mode <= 1; menu_active <= 0; game_loaded <= 1; picker_reset <= 1; hold_gb <= 0; state <= S_CRUN;
         end
     end
     S_CRUN: ;                                        // playing the cart (its save is on the cart: no pause panel)
@@ -705,7 +708,7 @@ always @(posedge clk_74a) begin
     end
 
     // ---- load the selection: read its entry, probe its suspend file once, lay out the title and platform
-    S_LOAD: if (cart_play && !cart_checked) begin cart_checked <= 1; state <= S_CP0; end
+    S_LOAD: if (!cart_checked) begin cart_checked <= 1; state <= S_CP0; end
     else begin
         target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= ENT_OFF + {14'd0, idx, 7'd0};
         target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd16; target_dataslot_length <= 32'd128;
@@ -742,7 +745,7 @@ always @(posedge clk_74a) begin
     S_MAP_CHAR: begin
         ch = line2 ? plat_char(pmode, ecode, enum_, lbl_sec, gm_sel, cur_fav, k) : (k[0] ? ent_q[15:8] : ent_q[7:0]);
         gw = lf ? wrom2[ch[6:0]] : wrom[ch[6:0]];
-        if (ch == 0 || k == (line2 ? 6'd20 : 6'd40) || (lf ? mp[8:0] >= 9'd500 : mp[7:0] >= 8'd250)) state <= S_MAP_DONE;
+        if (ch == 0 || k == (line2 ? 6'd24 : 6'd40) || (lf ? mp[8:0] >= 9'd500 : mp[7:0] >= 8'd250)) state <= S_MAP_DONE;
         else if (gw == 0) begin k <= k + 1'b1; state <= S_MAP_FETCH; end
         else begin col <= 0; state <= S_MAP_COL; end
     end
@@ -772,8 +775,12 @@ always @(posedge clk_74a) begin
     S_MENU: begin
         if (!menu_active) begin gen <= ~gen; menu_active <= 1; level_target <= 4'd8; tl_target <= 4'd8; end
         if (cart_view) begin
-            pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_s <= 0;
+            pend_u <= 0; pend_d <= 0; pend_x <= 0;
             if (pend_a) begin pend_a <= 0; state <= S_CRUN0; end
+            else if (pend_l || pend_r || (pend_s && !cart_play)) begin   // to the list (Select: the ring goes on to All)
+                pend_l <= 0; pend_r <= 0; pend_s <= 0; cart_view <= 0; fav_mode <= 0; idx <= 11'd0;
+                lbl_on <= 1; lbl_sec <= 5'd28; lerr <= 0; tl_target <= 0; state <= S_FADE;
+            end
             else if (lflush_req && mt == 28'd222_000_000) begin
                 lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
             end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
@@ -783,10 +790,14 @@ always @(posedge clk_74a) begin
             pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
         end else if (!anim && pend_x && pver >= 16'd7 && cur_known) begin
             pend_x <= 0; gm_on <= 1; gm_sel <= 0; lbl_on <= 0; state <= S_GMA;
-        end else if (!anim && pend_s && fav_count != 0 && idx_ok) begin
-            pend_s <= 0; fav_mode <= ~fav_mode; lbl_on <= 1; lbl_sec <= fav_mode ? 5'd28 : 5'd0;
-            if (!fav_mode && idx >= fav_count) idx <= 11'd0;
-            lerr <= 0; tl_target <= 0; state <= S_FADE;
+        end else if (!anim && pend_s && ((fav_count != 0 && idx_ok) || cart_found)) begin
+            pend_s <= 0; lerr <= 0; tl_target <= 0; state <= S_FADE;
+            if (!fav_mode && fav_count != 0 && idx_ok) begin           // All -> Favorites
+                fav_mode <= 1; lbl_on <= 1; lbl_sec <= 5'd0;
+                if (idx >= fav_count) idx <= 11'd0;
+            end else if (cart_found) begin                             // -> Cartridge
+                fav_mode <= 0; lbl_on <= 0; cart_view <= 1; idx <= cart_idx;
+            end else begin fav_mode <= 0; lbl_on <= 1; lbl_sec <= 5'd28; end   // Favorites -> All
         end else if (!anim && (pend_u || pend_d) && idx_ok && !fav_mode && count > 1) begin
             jup <= pend_u; pend_u <= 0; pend_d <= 0; state <= S_JMP0;
         end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; lbl_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
@@ -794,7 +805,7 @@ always @(posedge clk_74a) begin
             lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
         end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
         if (count <= 1 || !idx_ok || fav_mode) begin pend_u <= 0; pend_d <= 0; end
-        if (fav_count == 0 || !idx_ok) pend_s <= 0;
+        if ((fav_count == 0 || !idx_ok) && !cart_found) pend_s <= 0;
         if (pver < 16'd7) pend_x <= 0;
         if (count <= 1) begin pend_l <= 0; pend_r <= 0; end
     end

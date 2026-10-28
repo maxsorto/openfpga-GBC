@@ -343,7 +343,7 @@ wire    [31:0]  target_dataslot_length;
 wire            picker_hold_gb;             // cover picker: Game Boy held in reset
 // cover picker hi-res menu: SDRAM read port (clk_sys), art loading, video
 wire            picker_sd_own, picker_sd_oe, picker_sd_we, picker_art_load;
-wire            picker_cprobe_req;
+wire            picker_cprobe_req, picker_cart_mode;
 wire     [15:0] picker_sd_wd;
 reg      [15:0] picker_dbg = 0;            // cover picker diagnostics (see the end of this file)
 wire    [23:0]  picker_sd_addr;
@@ -524,7 +524,7 @@ synch_3 #(.WIDTH(32)) s06 (cont3_key,       cont3_key_s,        clk_sys);
 synch_3 #(.WIDTH(32)) s07 (cont4_key,       cont4_key_s,        clk_sys);
 synch_3 #(.WIDTH(32)) s08 (boot_settings,   boot_settings_s,    clk_sys);
 synch_3 #(.WIDTH(32)) s09 (run_settings,    run_settings_s,     clk_sys);
-synch_3               s10 (osnotify_adapter_play, cart_physical_mode, clk_sys);
+synch_3               s10 (osnotify_adapter_play | picker_cart_mode, cart_physical_mode, clk_sys);   // Play Cartridge, or a cart launched from the menu
 
 logic sgb_en, rumble_en, originalcolors, ff_snd_en, ff_en, sgb_border_en, gba_en, audio_no_pops;
 logic [1:0] tint;
@@ -816,7 +816,7 @@ reg  [223:0] cart_hdr_r = 0;
 wire [15:0]  cprobe_addr = 16'h0134 + {11'd0, cpi};
 always_ff @(posedge clk_sys) begin
   cpq_s <= {cpq_s[1:0], picker_cprobe_req};
-  if (cpq_s[2] != cpq_s[1] && cart_physical_mode && !cprobe_act) begin cprobe_act <= 1; cpi <= 0; cpt <= 0; end
+  if (cpq_s[2] != cpq_s[1] && !cprobe_act) begin cprobe_act <= 1; cpi <= 0; cpt <= 0; end   // cart power is always on
   else if (cprobe_act) begin
     cpt <= cpt + 1'b1;
     if (cpt == 7'd127) begin
@@ -831,13 +831,13 @@ assign cart_tran_bank3     = cprobe_act ? cprobe_addr[7:0] :
                              cart_access ? cart_addr[7:0] : {6'hzz, rumble_cart_rumble, 1'bz};
 assign cart_tran_bank3_dir = 1'b1;
 
-assign cart_tran_bank2     = cart_physical_mode ? (cprobe_act ? cprobe_addr[15:8] : {cart_a15, cart_addr[14:8]}) : 8'hzz;
-assign cart_tran_bank2_dir = cart_physical_mode;
+assign cart_tran_bank2     = cprobe_act ? cprobe_addr[15:8] : cart_physical_mode ? {cart_a15, cart_addr[14:8]} : 8'hzz;
+assign cart_tran_bank2_dir = cart_physical_mode | cprobe_act;
 
 assign cart_tran_bank1     = cart_write_access ? cart_di : 8'hzz;
 assign cart_tran_bank1_dir = cart_write_access;
 
-assign cart_tran_bank0     = cart_physical_mode
+assign cart_tran_bank0     = (cart_physical_mode | cprobe_act)
                            ? {cart_phi,
                               cprobe_act ? 1'b1 : cart_access ? ~cart_wr : rumble_cart_wr,
                               cprobe_act ? 1'b0 : cart_access ? cart_wr : 1'b1,
@@ -1362,6 +1362,7 @@ cover_picker cover_picker (
   .cart_notify                ( osnotify_adapter_raw       ),
   .cart_play                  ( osnotify_adapter_play      ),
   .cprobe_req                 ( picker_cprobe_req          ),
+  .cart_mode                  ( picker_cart_mode           ),
   .cprobe_done                ( cprobe_done_t              ),
   .cart_hdr                   ( cart_hdr_r                 ),
   .art_load                   ( picker_art_load            ),
