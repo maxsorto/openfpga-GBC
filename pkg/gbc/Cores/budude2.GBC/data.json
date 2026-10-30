@@ -93,6 +93,16 @@
         "extensions": [
           "cfg"
         ]
+      },
+      {
+        "id": 105,
+        "name": "Carts",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "cfg"
+        ]
       }
     ]
   }

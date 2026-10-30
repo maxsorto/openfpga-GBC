@@ -132,19 +132,19 @@ module tb_cart2;
   task expect_idx(input integer v); begin if (dut.idx != v) begin errs = errs + 1; $display("  FAIL want %0d", v); end end endtask
   initial begin
     force dut.boot_timer = 27'd36_999_990; #100 core_ready = 1; #2000 release dut.boot_timer;
-    wait (dut.state == 23 && dut.level == 8);
+    wait (dut.state == 23 && dut.level == 8); wait (!dut.vt_busy);
     $display("title %h crc %h: cart_view %0d found %0d idx %0d present %0d safe %0d", cart_hdr[87:0], dut.tcrc, dut.cart_view, dut.cart_found, dut.idx, dut.cart_present, dut.cart_safe);
     if (!dut.cart_view || dut.idx != 7 || !dut.cart_safe || dut.tcrc != 32'hfb07c0c0) errs = errs + 1;
     // pull the cart: the next live check drops the cart view
     saved = cart_hdr; cart_hdr = {224{1'b1}};
     force dut.rp_tmr = 28'd74_000_000; @(posedge clk); @(posedge clk); release dut.rp_tmr;
-    repeat (8) @(posedge hr_vs);
+    wait (dut.vt_busy); wait (!dut.vt_busy); repeat (2) @(posedge hr_vs);   // the cartridge transition runs first
     $display("removed: cart_view %0d found %0d present %0d idx %0d label %0d/%0d", dut.cart_view, dut.cart_found, dut.cart_present, dut.idx, dut.lbl_on, dut.lbl_sec);
     if (dut.cart_view || dut.cart_found || dut.cart_present || dut.lbl_sec != 29) errs = errs + 1;
     // put it back: the cart view returns
     cart_hdr = saved;
     force dut.rp_tmr = 28'd74_000_000; @(posedge clk); @(posedge clk); release dut.rp_tmr;
-    repeat (8) @(posedge hr_vs);
+    wait (dut.vt_busy); wait (!dut.vt_busy); repeat (2) @(posedge hr_vs);   // the cartridge transition runs first
     $display("reinserted: cart_view %0d found %0d idx %0d", dut.cart_view, dut.cart_found, dut.idx);
     if (!dut.cart_view || !dut.cart_found || dut.idx != 7) errs = errs + 1;
     $display("RESULT %s (%0d errors)", errs == 0 ? "PASS" : "FAIL", errs);

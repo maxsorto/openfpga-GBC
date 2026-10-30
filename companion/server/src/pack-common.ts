@@ -4,6 +4,8 @@
  * pack-v7.ts); pack.ts picks one.
  */
 import { fit, toRgb565, type RGBImage } from './pillow.js';
+import { accentOf } from './accent.js';
+import { allGamesTileBlob, tilePicks } from './tile.js';
 
 export const CEN = 128;
 export const TH = 80;
@@ -40,9 +42,24 @@ export interface PackEntry {
    * v7 stores one per entry so Play Cartridge can find the cover.
    */
   fingerprint?: Buffer;
+  /** RGB565 accent of the cover (v7 entry bytes 42 and 43), for the glow behind it. 0 is none. */
+  accent?: number;
+  /** A cart seen on the Pocket, with no ROM on the card (v7 flags bit 2). Its path structs are zero. */
+  cartOnly?: boolean;
+  /** It has real art (not a title card). The All games tile prefers these. */
+  hasArt?: boolean;
 }
 
-export type MenuSection = 'played' | 'favorite' | 'az';
+/** The pack has a favorites section, so Favorites mode is there and needs its All games tile. */
+export function hasFavorites(games: PackEntry[]): boolean {
+  return games.some((g) => g.section === 'favorite');
+}
+
+/**
+ * played, favorite and az make the browsable menu. cart entries (v7) come after it:
+ * carts seen on the Pocket that have no ROM on the card, found only by Play Cartridge.
+ */
+export type MenuSection = 'played' | 'favorite' | 'az' | 'cart';
 
 /** A game with its art decoded, for building a pack in memory (tests, small packs). */
 export interface PackGame extends PackEntry {
@@ -112,7 +129,13 @@ export function fixed(buf: Buffer, len: number): Buffer {
 
 /** The two RGB565 images for one game: 128x128 center, then 80x80 preview. */
 export function artBlob(art: RGBImage): Buffer {
-  return Buffer.concat([toRgb565(fit(art, CEN)), toRgb565(fit(art, TH))]);
+  return artBlobAndAccent(art).blob;
+}
+
+/** The art blob and the cover's accent color, from one fit of the 128x128 image. */
+export function artBlobAndAccent(art: RGBImage): { blob: Buffer; accent: number } {
+  const center = fit(art, CEN);
+  return { blob: Buffer.concat([toRgb565(center), toRgb565(fit(art, TH))]), accent: accentOf(center) };
 }
 
 export const HEADER_BYTES = 16;
@@ -142,9 +165,14 @@ export interface PackFormat {
   reserved?(games: PackEntry[]): Buffer;
   /** Path structs after the picker.log one, for files the core opens by name. */
   trailer?(platform: string): string[];
-  /** Bytes after the last path struct, and what goes there. `start` is its file offset. */
-  tailBytes?(count: number): number;
-  tail?(games: PackEntry[], start: number): Buffer;
+  /**
+   * Bytes after the last path struct, and what goes there. `start` is its file offset.
+   * `tile` is the All games tile (v7, when the pack has favorites), or null.
+   */
+  tailBytes?(count: number, tile: boolean): number;
+  tail?(games: PackEntry[], start: number, tile: Buffer | null): Buffer;
+  /** The format carries the All games tile when the pack has favorites (v7). */
+  allGamesTile?: boolean;
   /** A last chance to fix the order, for formats that rely on it. Returns the games to write, in order. */
   arrange?<T extends PackEntry>(games: T[]): T[];
 }
@@ -153,6 +181,8 @@ export interface PackBuildOptions {
   /** Platform folder for the picker.log path. */
   logPlatform?: string;
   onProgress?: (done: number) => void;
+  /** The All games tile's art blob, for a streamed pack with favorites (v7). Built for you in memory builds. */
+  allGamesTile?: Buffer;
 }
 
 /** File offset of the first path struct. */
@@ -166,14 +196,15 @@ export function tailStart(fmt: PackFormat, count: number): number {
   return pathsStart(fmt, count) + (count * 3 + 1 + trailer) * PATH_STRUCT_BYTES;
 }
 
-export function packSize(fmt: PackFormat, count: number): number {
-  return tailStart(fmt, count) + (fmt.tailBytes?.(count) ?? 0);
+export function packSize(fmt: PackFormat, count: number, tile = false): number {
+  return tailStart(fmt, count) + (fmt.tailBytes?.(count, tile && !!fmt.allGamesTile) ?? 0);
 }
 
 function checkGames(fmt: PackFormat, games: PackEntry[]): void {
   if (games.length === 0) throw new Error('No games to pack');
   if (games.length > fmt.maxGames) throw new Error(`Pack v${fmt.version} holds at most ${fmt.maxGames} games`);
   for (const g of games) {
+    if (g.cartOnly) continue;
     const problems = pathProblems(g.platform, g.romFile);
     if (problems.length) throw new Error(`${g.romFile}: ${problems.join(' ')}`);
   }
@@ -197,6 +228,10 @@ function header(fmt: PackFormat, games: PackEntry[]): Buffer {
 function pathStructs(fmt: PackFormat, games: PackEntry[], logPlatform: string): Buffer {
   const out: Buffer[] = [];
   for (const g of games) {
+    if (g.cartOnly) {
+      out.push(Buffer.alloc(3 * PATH_STRUCT_BYTES));
+      continue;
+    }
     const p = gamePaths(g.platform, g.romFile);
     for (const q of [p.rom, p.sav, p.sus]) out.push(fixed(Buffer.from(q, 'utf8'), PATH_STRUCT_BYTES));
   }
@@ -216,14 +251,20 @@ function padBlob(fmt: PackFormat, blob: Buffer): Buffer {
 /** The whole pack in memory. Fine for 31 games and for tests. */
 export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBuildOptions = {}): Buffer {
   checkGames(fmt, gamesIn);
-  const games = fmt.arrange ? fmt.arrange(gamesIn) : gamesIn;
+  const arranged = fmt.arrange ? fmt.arrange(gamesIn) : gamesIn;
+  const arts = arranged.map((g) => artBlobAndAccent(g.art));
+  const games = arranged.map((g, i) => ({ ...g, accent: g.accent ?? arts[i].accent }));
   const parts: Buffer[] = [header(fmt, games), ...games.map((g) => fmt.entry(g))];
-  games.forEach((g, i) => {
-    parts.push(padBlob(fmt, artBlob(g.art)));
+  games.forEach((_, i) => {
+    parts.push(padBlob(fmt, arts[i].blob));
     opts.onProgress?.(i + 1);
   });
   parts.push(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
-  if (fmt.tail) parts.push(fmt.tail(games, tailStart(fmt, games.length)));
+  let tile: Buffer | null = null;
+  if (fmt.allGamesTile && hasFavorites(games)) {
+    tile = opts.allGamesTile ?? allGamesTileBlob(tilePicks(arranged).map((g) => g.art));
+  }
+  if (fmt.tail) parts.push(fmt.tail(games, tailStart(fmt, games.length), tile));
   return Buffer.concat(parts);
 }
 
@@ -251,8 +292,10 @@ export async function writePackWith(
     opts.onProgress?.(i + 1);
   }
   await put(pathStructs(fmt, games, opts.logPlatform ?? 'gbc'));
-  if (fmt.tail) await put(fmt.tail(games, tailStart(fmt, games.length)));
-  if (written !== packSize(fmt, games.length)) throw new Error('Pack came out the wrong size');
+  const tile = fmt.allGamesTile && hasFavorites(games) ? (opts.allGamesTile ?? null) : null;
+  if (fmt.allGamesTile && hasFavorites(games) && !tile) throw new Error('A pack with favorites needs its All games tile');
+  if (fmt.tail) await put(fmt.tail(games, tailStart(fmt, games.length), tile));
+  if (written !== packSize(fmt, games.length, !!tile)) throw new Error('Pack came out the wrong size');
   return written;
 }
 
@@ -263,7 +306,8 @@ export interface PackWriter {
   maxGames: number;
   build(games: PackGame[], opts?: PackBuildOptions): Buffer;
   write(games: StreamGame[], sink: (chunk: Buffer) => void | Promise<void>, opts?: PackBuildOptions): Promise<number>;
-  expectedSize(count: number): number;
+  /** File size; `tile` when the pack has favorites (v7 adds the All games tile). */
+  expectedSize(count: number, tile?: boolean): number;
 }
 
 export function makeWriter(fmt: PackFormat): PackWriter {
@@ -272,7 +316,7 @@ export function makeWriter(fmt: PackFormat): PackWriter {
     maxGames: fmt.maxGames,
     build: (games, opts) => buildPackWith(fmt, games, opts),
     write: (games, sink, opts) => writePackWith(fmt, games, sink, opts),
-    expectedSize: (n) => packSize(fmt, n),
+    expectedSize: (n, tile = false) => packSize(fmt, n, tile),
   };
 }
 
@@ -290,8 +334,12 @@ export interface PackSummary {
   roms: string[];
   /** v7 only. */
   crcs: string[];
-  /** Entry flags: bit 0 original Game Boy, bit 1 favorite (v7). */
+  /** Entry flags: bit 0 original Game Boy, bit 1 favorite, bit 2 cartridge only (v7). */
   flags: number[];
+  /** v7: RGB565 accent per entry (bytes 42 and 43). */
+  accents: number[];
+  /** v7: the "CRT1" block at file offset 96. */
+  carts: { artOffset: number; listCount: number; flags: number; accents: number[] } | null;
   /** v7 only, when the reserved area starts with "IDX1". */
   index: PackIndex | null;
   /** v7 only: where the cartridge fingerprint table is ("FPR2" at file offset 80). */
@@ -307,12 +355,14 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   const roms: string[] = [];
   const crcs: string[] = [];
   const flags: number[] = [];
+  const accents: number[] = [];
   const pathAt = version >= 7 ? 52 : 48;
   for (let i = 0; i < count; i++) {
     const o = HEADER_BYTES + RESERVED_BYTES + i * ENTRY_BYTES;
     if (o + ENTRY_BYTES > buf.length) break;
     titles.push(buf.toString('latin1', o, o + 40).replace(/\0.*$/s, ''));
     flags.push(buf.readUInt8(o + 40));
+    if (version >= 7) accents.push(buf.readUInt16LE(o + 42));
     roms.push(buf.toString('utf8', o + pathAt, o + ENTRY_BYTES).replace(/\0.*$/s, ''));
     if (version >= 7) crcs.push(buf.readUInt32LE(o + 48).toString(16).toUpperCase().padStart(8, '0'));
   }
@@ -324,7 +374,11 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   if (version >= 7 && buf.length >= 92 && buf.toString('ascii', 80, 84) === 'FPR2') {
     fingerprints = { offset: buf.readUInt32LE(84), count: buf.readUInt16LE(88) };
   }
-  return { version, count, titles, roms, crcs, flags, index, fingerprints };
+  let carts: PackSummary['carts'] = null;
+  if (version >= 7 && buf.length >= 116 && buf.toString('ascii', 96, 100) === 'CRT1') {
+    carts = { artOffset: buf.readUInt32LE(100), listCount: buf.readUInt16LE(104), flags: buf.readUInt16LE(106), accents: [108, 110, 112].map((o) => buf.readUInt16LE(o)) };
+  }
+  return { version, count, titles, roms, crcs, flags, accents, carts, index, fingerprints };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */

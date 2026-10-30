@@ -76,6 +76,35 @@ export interface Library {
   };
 }
 
+/** A cart seen on the Pocket that it did not recognize. */
+export interface Cart {
+  id: string;
+  /** The title the cart stores, for example "PM_CRYSTAL". */
+  headerTitle: string;
+  code: string | null;
+  cgb: number;
+  /** Only in carts.cfg on the card so far: saved on the next sync. */
+  pending: boolean;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  timesSeen: number;
+  identified: { status: 'exact' | 'guessed'; name: string; system: 'gb' | 'gbc'; crc: string; score: number } | null;
+  /** The library game it is, when it is one. */
+  inLibrary: string | null;
+  title: string;
+  defaultTitle: string;
+  titleEdited: boolean;
+  art: ArtRef | null;
+  autoArt: ArtRef | null;
+  picked: boolean;
+  status: GameStatus;
+}
+
+export interface CartsInfo {
+  cfg: { file: string; n: number; records: number } | null;
+  carts: Cart[];
+}
+
 export interface Volume {
   name: string;
   mountPath: string;
@@ -126,6 +155,12 @@ export interface SyncPlan {
   suspends: { file: string; size: number; rom: string; title: string; oldCrc: string; newCrc: string }[];
   /** "Use the library's" replacements: the old copy's choices that follow the new dump. */
   carryOver: { from: string; to: string; file: string; title: string; kept: string[] }[];
+  carts: {
+    cfg: { file: string; n: number; records: number; newCarts: number; misreads: number; sha: string } | null;
+    entries: { id: string; headerTitle: string; title: string; status: 'exact' | 'guessed' }[];
+    inLibrary: { id: string; headerTitle: string; game: string }[];
+    unidentified: { id: string; headerTitle: string }[];
+  };
   /** Favorites changed on the Pocket (favorites.cfg). */
   pocketFavorites: { file: string; records: number; sha: string; changes: { crc: string; favorite: boolean; titles: string[] }[] } | null;
   cardOnly: string[];
@@ -146,6 +181,8 @@ export interface SyncPlan {
     /** Entries in the favorites and played sections at the top. */
     favCount: number;
     playedCount: number;
+    /** Entries in the browsable menu; the rest are carts seen on the Pocket. */
+    listCount: number;
     titles: string[];
     crcs: string[];
     skipped: string[];
@@ -168,6 +205,8 @@ export const api = {
   settings: async () => json<Settings>(await fetch('/api/settings')),
   saveSettings: async (s: Partial<Settings>) => json<Settings>(await post('/api/settings', s)),
   library: async (card: string | null) => json<Library>(await fetch(`/api/library${card ? `?card=${encodeURIComponent(card)}` : ''}`)),
+  carts: async (card: string | null) => json<CartsInfo>(await fetch(`/api/carts${card ? `?card=${encodeURIComponent(card)}` : ''}`)),
+  forgetCart: async (id: string) => json<{ ok: boolean }>(await post('/api/carts/forget', { id })),
   migrationsSeen: async (ids: string[]) => json<{ ok: true }>(await post('/api/migrations/seen', { ids })),
   saveChoices: async (patches: Record<string, ChoicePatch>) => json<{ ok: true }>(await post('/api/choices', { patches })),
   candidates: async (q: string, system: 'gb' | 'gbc') =>

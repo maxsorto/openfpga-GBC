@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, subscribeSync, type SyncEvent, type SyncPhase, type SyncPlan } from './api';
-import { IconCheck, IconClose, IconEject, IconStar, IconWarn } from './Icons';
+import { IconCard, IconCheck, IconClose, IconEject, IconStar, IconWarn } from './Icons';
 import { fmtBytes, isVolumePath, words } from './util';
 
 type Stage = 'planning' | 'plan' | 'running' | 'done' | 'error';
@@ -266,7 +266,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 <div className="notice ok">
                   <IconCheck />
                   <div>
-                    {plan.pack.reason} covers.bin is pack v{plan.pack.version}, {fmtBytes(plan.pack.bytes)}. Favorites come first, then A to Z.
+                    {plan.pack.reason} covers.bin is pack v{plan.pack.version}, {fmtBytes(plan.pack.bytes)}. Favorites mode shows your favorites, then All
+                    games, which has every game once, A to Z.
                   </div>
                 </div>
               ) : plan.menuGames > plan.pack.limit ? (
@@ -279,6 +280,25 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 </div>
               ) : (
                 <div className="notice muted">{plan.pack.reason}</div>
+              )}
+              {plan.carts.cfg && plan.carts.cfg.records === 0 && plan.carts.cfg.misreads > 0 && (
+                <div className="notice muted">
+                  carts.cfg has {plan.carts.cfg.misreads === 1 ? 'a cart' : `${plan.carts.cfg.misreads} carts`} read through bad contacts, not real carts. Sync
+                  skips {plan.carts.cfg.misreads === 1 ? 'it' : 'them'} and empties carts.cfg.
+                </div>
+              )}
+              {plan.carts.cfg && plan.carts.cfg.records > 0 && (
+                <div className="notice ok">
+                  <IconCard />
+                  <div>
+                    {(() => {
+                      const n = plan.carts.cfg.newCarts;
+                      const named = plan.carts.entries.length;
+                      const bad = plan.carts.cfg.misreads ? ` ${plan.carts.cfg.misreads} misread (bad contacts) ${plan.carts.cfg.misreads === 1 ? 'is' : 'are'} skipped.` : '';
+                      return `${plan.carts.cfg.records} ${plan.carts.cfg.records === 1 ? 'cart' : 'carts'} from the Pocket${n ? `, ${n} new` : ''}. Sync saves them here, puts the ${named} with a cover in covers.bin, then empties carts.cfg.${bad}`;
+                    })()}
+                  </div>
+                </div>
               )}
               {plan.pocketFavorites && plan.pocketFavorites.changes.length > 0 && (
                 <div className="notice ok">
@@ -430,6 +450,37 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                     </ul>
                   </details>
                 )}
+                {plan.carts.entries.length + plan.carts.unidentified.length + plan.carts.inLibrary.length > 0 && (
+                  <details>
+                    <summary>
+                      Cartridges <span className="count">{plan.carts.entries.length}</span>
+                    </summary>
+                    <p className="plan-note">Carts seen on the Pocket. The ones with a cover go in covers.bin after your games, so Play Cartridge shows them.</p>
+                    <ul className="plan-list">
+                      {plan.carts.entries.map((c) => (
+                        <li key={c.id}>
+                          <span className="grow ellipsis">{c.title}</span>
+                          <span className="dim mono">{c.headerTitle}</span>
+                          <span className={`chip ${c.status}`}>{c.status === 'exact' ? 'Exact' : 'Guessed'}</span>
+                        </li>
+                      ))}
+                      {plan.carts.inLibrary.map((c) => (
+                        <li key={c.id}>
+                          <span className="grow ellipsis">{c.game}</span>
+                          <span className="dim mono">{c.headerTitle}</span>
+                          <span className="chip exact">In library</span>
+                        </li>
+                      ))}
+                      {plan.carts.unidentified.map((c) => (
+                        <li key={c.id}>
+                          <span className="grow ellipsis dim">No match</span>
+                          <span className="dim mono">{c.headerTitle}</span>
+                          <span className="chip none">Plain cart</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 {plan.pocketFavorites && plan.pocketFavorites.changes.length > 0 && (
                   <details>
                     <summary>
@@ -477,8 +528,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 </details>
               </div>
               <p className="plan-foot dim">
-                Battery saves (.sav) are never touched. Under Saves, sync only empties favorites.cfg after saving its changes, and a suspend point
-                made with a different ROM, after keeping a copy.
+                Battery saves (.sav) are never touched. Under Saves, sync only empties favorites.cfg and carts.cfg after saving what is in them, and
+                a suspend point made with a different ROM, after keeping a copy.
               </p>
             </>
           )}

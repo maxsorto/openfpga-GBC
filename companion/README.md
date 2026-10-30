@@ -22,13 +22,15 @@ There is no Python dependency.
    matched at once. Art downloads in the background, a few at a time, and fills in as
    it arrives. The toolbar shows how many are Exact, Guessed or have No art, with a
    filter for each.
-4. **Two views.** *Library* shows everything in the folder. *Pocket* shows what the card
-   will hold, in the order the Pocket shows it.
-5. **Favorites.** Star any game, here or on the Pocket. On the Pocket, games you played
-   come first (most recent first), then favorites A to Z, then the A to Z list. With the
-   streaming core the A to Z list has every game, so a favorite also shows under its
-   letter. Favorites you set on the Pocket come back on the next sync (see
-   "Favorites from the Pocket"). Play history does not exist yet.
+4. **Three views.** *Library* shows everything in the folder. *Pocket* shows what the
+   card will hold, in the order the Pocket shows it. *Cartridges* shows carts the Pocket
+   did not recognize (see "Cartridges the Pocket does not know").
+5. **Favorites.** Star any game, here or on the Pocket. With the streaming core the
+   Pocket has two ways to browse: Favorites mode shows your favorites A to Z, then one
+   last cover, All games, and A on it switches to the full list. The full list has every
+   game once, A to Z. With today's 31 game core, favorites come first in the one list.
+   Favorites you set on the Pocket come back on the next sync (see "Favorites from the
+   Pocket"). Play history does not exist yet.
 6. **Fix a cover.** Click a cover to search the libretro box art, use a title card, or
    drop in your own PNG or JPEG. The preview shows the 128 by 128 center image and the
    80 by 80 list image, in the Pocket's 16 bit color. Click a title to rename it.
@@ -54,6 +56,7 @@ There is no Python dependency.
 | `Saves/gbc/common/*.sav` | Never touched. |
 | `Saves/gbc/common/*.sus` | Only a suspend point made with a different ROM than the one sync puts at that name: copied to the Mac, then emptied (see "Suspend points"). |
 | `Saves/gbc/common/favorites.cfg` | Read, and emptied after its changes are saved (see "Favorites from the Pocket"). |
+| `Saves/gbc/common/carts.cfg` | Read, and emptied after its carts are saved (see "Cartridges the Pocket does not know"). |
 | Everything else under `Saves/` | Never touched. |
 | ROMs you copied by hand | Adopted when they are the same ROM as a library game. Otherwise never touched, unless you choose "Use the library's" for one. The plan lists them as "On the card, not from this app". |
 
@@ -131,6 +134,53 @@ ignored, and so is an all-zero one, which the core makes before its first write.
 
 If the library folder has no ROMs at all, sync stops before it removes anything.
 
+### Cartridges the Pocket does not know
+
+When you insert a cart that matches nothing in the pack, the core shows a plain
+cartridge image with the cart's header title, and notes the cart's header in
+`Saves/gbc/common/carts.cfg`. On the next sync the app saves it (in `carts.json`),
+works out what game it is, and puts it in `covers.bin` with real box art, so next time
+the cart shows its real cover. Then it writes `carts.cfg` back empty.
+
+How the app works out the game:
+
+1. **Game code.** On color carts with a 4 letter game code (byte `0x143` has bit 7 set
+   and `0x13F` to `0x142` are capital letters or digits), the code is looked up in the
+   No-Intro DAT. A hit is **Exact**. Few DAT entries have codes, so this is rare.
+2. **Title.** Otherwise the header title (`PM_CRYSTAL`, `KLAX`, `POKEMON_SLV`) is matched
+   against the No-Intro names, word by word, allowing for shortened words ("SLV" for
+   Silver, "PM" for Pokemon). Only Game Boy Color names count when byte `0x143` is
+   `0xC0`, both when it is `0x80`, and only Game Boy names otherwise. A close match is
+   **Guessed**. Then the box art is found as for any game.
+
+A cart that is a game in your library (the same revision, or the same title) is not
+added: the pack already knows it. A cart nothing fits gets no entry, and the Pocket keeps
+showing the plain cartridge with its title. Pick a cover for it in the Cartridges view
+and it goes in the pack too.
+
+The Cartridges view lists every cart the Pocket noted: its header title, the game it
+was found to be with its cover and an Exact or Guessed chip, Change cover (the same
+picker as for games) and Forget. A forgotten cart comes back if the Pocket notes it
+again. New carts that are only in `carts.cfg` so far are marked New until you sync.
+
+`carts.cfg` is 4096 bytes, little-endian:
+
+| Offset | Size | What |
+| --- | --- | --- |
+| 0 | 4 | `CRL1` |
+| 4 | u16 | version, 1 |
+| 6 | u16 | n, records used (up to 127) |
+| 8 | 8 | zero |
+| 16 | n x 32 B | the cart's ROM header bytes `0x134` to `0x14F` (28 bytes), then 4 zero bytes |
+
+The same cart can be there more than once (once per session); the app keeps it once.
+A missing file, an all-zero one, or one with n = 0 means no carts. A record with any
+title byte (`0x134` to `0x142`) that has bit 7 set is a misread through bad contacts,
+not a real cart: it is skipped, never saved, and the file is still emptied. Headers
+with no spaces in the title ("THERUGRATSMOVIE") are matched too, and when a color cart's
+last 4 title letters look like a game code the DAT does not know, they are read as the
+end of the title.
+
 ### Pack v6 or v7: it depends on the core
 
 Sync reads `Cores/maxsorto.GBC/core.json` on the card and looks at
@@ -141,10 +191,11 @@ Sync reads `Cores/maxsorto.GBC/core.json` on the card and looks at
 | Version ends in `-cover2` or higher (`-coverN`, N of 2 or more): the streaming core | Pack v7 | All of them, up to 2047 |
 | Any other version, or no core found | Pack v6 | The first 31 |
 
-Either way, sync copies every game. The menu starts with games you played, then
-favorites A to Z. With v7, the A to Z list after that has every game, so a favorite is
-in the menu twice: at the top and under its letter, where Up and Down find it. With v6
-each game is listed once, and the rest follow A to Z. Titles that start with a digit or a
+Either way, sync copies every game. With v7, the pack lists games you played, then your
+favorites A to Z (what Favorites mode shows, followed by the All games cover), then every
+game A to Z (what the full list shows, each game once, where Up and Down jump by letter).
+So a favorite is in the pack twice. With v6 there is one list: played, favorites, then
+the rest A to Z, each game once. Titles that start with a digit or a
 symbol come first in the A to Z list, under `#`. The plan says which format it chose
 and why, for example "Streaming core found (1.4.0-cover2): all 702 games" or "This
 core (1.4.0-cover1) shows 31 games. Install build 17 to see all." With v6 the Pocket
@@ -250,19 +301,33 @@ Both formats are defined by `tools/make_cover_pack.py` (v6 by default, v7 with `
 | | v6 | v7 |
 | --- | --- | --- |
 | Games | up to 31 | up to 2047 |
-| Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad[3], size u32, CRC32 u32, path[76] |
-| Flags | bit 0 original Game Boy | bit 0 original Game Boy, bit 1 favorite |
+| Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad u8, accent u16, size u32, CRC32 u32, path[76] |
+| Flags | bit 0 original Game Boy | bit 0 original Game Boy, bit 1 favorite, bit 2 cartridge only |
 | Art per game | 45568 B, packed back to back | the same 45568 B, padded with zeros to 65536 B |
-| After the log path | nothing | one more path struct: `/Saves/<platform>/common/favorites.cfg`, then the cartridge fingerprint table |
-| Favorites | listed once | at the top, and again under their letter (full copies) |
+| After the log path | nothing | two more path structs, `/Saves/<platform>/common/favorites.cfg` and `carts.cfg`; then the cartridge fingerprint table; then the default cartridge art |
+| Favorites | listed once | in the favorites section, and again in the A to Z list (full copies) |
+| All games tile | none | a fourth default image when there are favorites |
+| Carts the Pocket noted | not included | cartridge-only entries after the browsable list |
 
 Both start with a 16 byte header (`GBCV`, version, count, 128, 80) and 512 reserved
 bytes, and end with three 256 byte path structs per game (ROM, `.sav`, `.sus`) and one
-for `picker.log`. v7 adds one for `favorites.cfg` right after it: the core finds it at
-paths0 + (count x 3 + 1) x 256. The CRC32 in v7 is of the whole ROM file, so the core can
+for `picker.log`. v7 adds one for `favorites.cfg` right after it (the core finds it at
+paths0 + (count x 3 + 1) x 256), then one for `carts.cfg`. The CRC32 in v7 is of the whole ROM file, so the core can
 key play history and favorites by game. Flags bit 1 is set on every entry of a favorite,
 so the core knows a game is a favorite wherever it is in the list. The fixed 64 KB
 stride lets the core read any cover by its index.
+
+The accent (entry bytes 42 and 43) is the RGB565 color of the cover, for the glow the
+core draws behind a cart's cover. It is worked out from the 128 by 128 image: in HSV,
+pixels darker than v = 0.15 are skipped, the rest are weighted by s x s x v, and the
+weighted mean color is made a little more saturated (s x 1.3) at full brightness. A
+cover with almost no color (total weight under 2% of the pixels) gets a cool white,
+`#C8D4FF`, treated the same way. Every entry has one.
+
+A cartridge-only entry (flags bit 2) is a cart the Pocket noted that has no ROM on the
+card. Its path structs are all zero, its CRC32 is the cart's id (the CRC32 of its 28
+header bytes), its title and art are the game it was found to be, and its fingerprint
+record is built from the header the Pocket noted.
 
 In v7 the reserved area starts with a letter index, so Up and Down on the Pocket jump
 between letters:
@@ -284,10 +349,25 @@ is:
 | 88 | u16 | Records in it: the pack's entry count, duplicates included |
 | 90 | u16 | 0 |
 
+At file offset 96, v7 has the cartridge block:
+
+| Offset | Size | What |
+| --- | --- | --- |
+| 96 | 4 | `CRT1` |
+| 100 | u32 | File offset of the default cartridge art (0 if none) |
+| 104 | u16 | list_count: entries 0 to list_count - 1 are the browsable menu; the rest are cartridge-only |
+| 106 | u16 | Flags. Bit 0: the `carts.cfg` path struct follows the `favorites.cfg` one. Bit 1: the default art has a fourth image, the All games tile |
+| 108, 110, 112 | 3 x u16 | RGB565 accent of each default image |
+| 114 | u16 | 0 |
+
+The header count covers every entry, cartridge-only ones too, so they have art, path
+structs and fingerprint records like the rest. The letter index covers only the
+browsable list.
+
 The rest of the 512 bytes is zero. v6 keeps all 512 bytes zero.
 
-The table comes right after the `favorites.cfg` path struct, at
-paths0 + (count x 3 + 2) x 256 (on a 4 byte boundary), and ends the file. It has one
+The table comes right after the `carts.cfg` path struct, at
+paths0 + (count x 3 + 3) x 256 (on a 4 byte boundary). It has one
 8 byte record per entry, in entry order, read from that entry's ROM file:
 
 | Bytes | What |
@@ -300,6 +380,28 @@ paths0 + (count x 3 + 2) x 256 (on a 4 byte boundary), and ends the file. It has
 A ROM shorter than `0x150` bytes gets eight zeros. A favorite's two entries have the
 same record.
 
+The default cartridge art comes after the table, at a 4096 aligned offset, and ends
+the file: three images of the usual 45568 bytes at a 65536 stride, in this order: a
+gray Game Boy cart, a black dual-mode cart, a clear Game Boy Color cart. The core shows
+the one that fits a cart it does not know. In these three images RGB565 `0x0000` is
+transparent; an opaque pixel that would be `0x0000` is written as `0x0001`. The images
+come from `server/assets/carts/{dmg,dual,cgb}-128.png` and `-80.png` (RGBA, alpha 0 or
+255), made by `tools/make_cart_art.py`.
+
+When the pack has favorites, a fourth image follows at the same stride (and CRT1 flags
+bit 1 is set): the All games tile, the closing cover of Favorites mode. It is opaque, so
+`0x0000` is written as `0x0001` in it. It is a 3 by 3 mosaic of covers from the A to Z
+list, not favorites, picked evenly across it (the middle of each ninth; covers with real
+art first), so it reads as the whole library and stays the same for the same library.
+It is built at 384 by 384: 6 px dark gutters, 120 px cells (each cover fitted like any
+cover), the bottom third darkened (`p x 72 / 256`), and the words "All games" in white
+from `server/assets/tiles/all-games-384.png`, a grayscale mask drawn once in Inter
+SemiBold by `tools/make_tile_label.py`. Then it is fitted to 128 and 80 like a cover. No
+count is drawn; the core prints it under the cover. The Python tool builds the same tile
+when you pass `--favorite`. Until those exist, a simple drawn placeholder is used, by the app and the Python
+tool alike. Their accents are in one table in `server/src/cartart.ts` (the Python tool
+has a copy).
+
 ### Play Cartridge
 
 When you choose Play Cartridge in the Pocket menu, the core reads the cart's header and
@@ -307,7 +409,9 @@ looks it up in the fingerprint table. It looks for the exact revision first (the
 checksums and CGB flag), then for the title, so a cart that is another revision of a
 game in your library (Pokemon Crystal 1.0 when you have 1.1, say) still shows that
 game's cover. If it finds one, it shows the cover labeled CARTRIDGE, then boots the
-cart with the cart's own save.
+cart with the cart's own save. A cart it does not find shows the plain cartridge image
+with the cart's header title, and the next sync fixes that (see "Cartridges the Pocket
+does not know").
 
 The A to Z part is sorted to match: titles that start with anything but a letter (digits,
 punctuation, and characters the pack writes as `?`) come first as `#`, then A to Z, each
@@ -348,10 +452,12 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   removes nothing.
 - `pack-compat.test.ts` also checks the fingerprint table against the Python tool, with
   a ROM whose header bytes and title are known (`PM_CRYSTAL`, title CRC32 `0xFB07C0C0`)
-  and a ROM shorter than the header.
+  and a ROM shorter than the header; and a pack with favorites (`--favorite` in the
+  Python tool), including the All games tile, built in memory and streamed. The tile's
+  pick rule is tested on its own.
 - `format.test.ts`: the format follows the core (`-cover1` gives v6, `-cover2` and up
   give v7, no core or an unreadable `core.json` gives v6). A 40 game library syncs as v7
-  with the favorites at the top and again under their letter (full copies, flags bit 1
+  with the favorites section and the favorites again in the A to Z list (full copies, flags bit 1
   on both), each entry carrying its ROM's CRC32, the `favorites.cfg` path right after
   the log path, and the fingerprint table (`FPR2` at offset 80, one record per entry
   read from the ROM on the card, the same for both entries of a favorite) ending the
@@ -360,6 +466,13 @@ Tests (`npm test`) check this against the real Python tool and Pillow:
   sends each step and its bytes as it goes, and the app's event stream delivers them
   before the end. Also: no `._` files are left for files the app renamed or removed,
   and other `._` files stay.
+- `carts.test.ts`: `carts.cfg` (records, duplicates kept once, empty and broken files),
+  header decoding and the fingerprint record, identification (game code, then title,
+  by platform), the accent color, the default art's transparency, and a sync: carts
+  become cartridge-only entries after the list (`CRT1`, list_count, flags bit 2, zero
+  path structs, the `carts.cfg` path, the shifted fingerprint table, the default art at
+  a 4096 aligned offset), `carts.cfg` is emptied, saved carts stay in later packs, a
+  forgotten cart leaves, a cart that becomes a library game is skipped, and v6 gets none.
 - `pocket.test.ts`: the Silver case again. Using the library's Silver clears the suspend
   point made with the card's Silver (a copy is kept, the `.sav` is untouched); a library
   ROM that changed clears its suspend point too, a new or unchanged one never does.
@@ -388,6 +501,9 @@ which does not matter on the device.
   - `choices.json`: titles, art picks and favorites, keyed by ROM CRC32, and a log of
     choices that moved to a new dump.
   - `rom-paths.json`: the CRC32 last seen at each ROM path, to recognize a new dump.
+  - `carts.json`: carts the Pocket noted: header, when they were seen, and the game
+    each was found to be. Covers and titles you pick for them are in `choices.json`,
+    under the cart's id.
   - `custom-art/`: images you dropped in.
 - `~/Library/Caches/GBC Cover Companion/`
   - `dats/`: No-Intro DATs. Refreshed after 30 days.
@@ -441,8 +557,16 @@ companion/
       pack-common.ts  the layout every pack version shares, in memory or streamed
       pack-v6.ts      pack v6: 31 games, for today's core
       pack-v7.ts      pack v7: up to 2047 games, for the streaming core
+      carts.ts        carts the Pocket noted: carts.cfg, identification, saved carts
+      cartart.ts      the default cartridge art and its accents
+      accent.ts       the accent color of a cover
+      tile.ts         the All games tile for Favorites mode
+      pocketfav.ts    favorites.cfg
+    assets/carts/     the default cartridge art (PNG)
+    assets/tiles/     the "All games" label for the tile (grayscale PNG)
     test/             sync tests and compatibility tests against the Python tool
-  web/      Vite + React UI. The grid only draws the rows near the screen.
+  web/      Vite + React UI. The grid only draws the rows near the screen. CartsView.tsx
+            is the Cartridges view.
 ```
 
 ## Limits in this version

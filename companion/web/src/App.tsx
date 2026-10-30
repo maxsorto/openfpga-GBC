@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type ArtStatus, type Game, type Library } from './api';
+import { api, type ArtStatus, type CartsInfo, type Game, type Library } from './api';
+import { CartsView, cartAsGame } from './CartsView';
 import { GameCard } from './GameCard';
 import { IconCard, IconCheck, IconFolder, IconRefresh, IconSearch, IconStar, IconWarn } from './Icons';
 import { LibraryMenu } from './LibraryMenu';
@@ -12,7 +13,7 @@ import { useVolumes } from './useVolumes';
 import { VirtualGrid, type Block } from './VirtualGrid';
 import { fmtBytes, fmtDate, isVolumePath, packBytes as packSize, words } from './util';
 
-type View = 'library' | 'pocket';
+type View = 'library' | 'pocket' | 'cartridges';
 
 /** One card in the grid. In the Pocket view a favorite can be in two places. */
 interface Item {
@@ -61,7 +62,8 @@ function initialCard(): string | null {
 
 function initialView(): View {
   const q = new URLSearchParams(window.location.search).get('view');
-  return (q ?? stored('view')) === 'pocket' ? 'pocket' : 'library';
+  const v = q ?? stored('view');
+  return v === 'pocket' || v === 'cartridges' ? v : 'library';
 }
 
 function SectionHead({ title, count, note, icon }: { title: string; count?: number; note?: string; icon?: React.ReactNode }) {
@@ -88,6 +90,10 @@ export function App() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [picker, setPicker] = useState<Game | null>(null);
+  // Carts the Pocket did not recognize.
+  const [cartsInfo, setCartsInfo] = useState<CartsInfo | null>(null);
+  const [cartsLoading, setCartsLoading] = useState(false);
+  const [pickingCart, setPickingCart] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [art, setArt] = useState<ArtStatus | null>(null);
@@ -153,6 +159,22 @@ export function App() {
     },
     [libraryRoot, activeCard],
   );
+
+  const loadCarts = useCallback(async () => {
+    setCartsLoading(true);
+    try {
+      setCartsInfo(await api.carts(activeCard));
+    } catch {
+      // The cartridges view shows nothing new; the rest of the app works.
+    } finally {
+      setCartsLoading(false);
+    }
+  }, [activeCard]);
+
+  // Carts load with the library, and again after a sync (which saves new ones).
+  useEffect(() => {
+    if (settingsLoaded && (libraryRoot || activeCard)) void loadCarts();
+  }, [settingsLoaded, libraryRoot, activeCard, loadCarts, lib?.card?.covers.modifiedAt]);
 
   useEffect(() => {
     if (settingsLoaded) void load();
@@ -289,7 +311,15 @@ export function App() {
           icon={<IconStar on size={14} className="section-star" />}
           title="Favorites"
           count={pocket.favs.length}
-          note={pocket.favs.length ? 'A to Z' : 'Star a game to put it first.'}
+          note={
+            pocket.favs.length
+              ? streaming
+                ? 'Favorites mode on the Pocket shows these A to Z, then an All games cover.'
+                : 'A to Z'
+              : streaming
+                ? 'Star a game to see it in Favorites mode on the Pocket.'
+                : 'Star a game to put it first.'
+          }
         />
       ),
     });
@@ -299,7 +329,7 @@ export function App() {
       key: 'h-rest',
       height: HEAD_H,
       node: streaming ? (
-        <SectionHead title="All games" count={pocket.rest.length} note="A to Z, favorites included. Up and Down on the Pocket jump by letter." />
+        <SectionHead title="All games" count={pocket.rest.length} note="Every game once, A to Z. Up and Down on the Pocket jump by letter." />
       ) : (
         <SectionHead title="Everything else" count={pocket.rest.length} note="A to Z" />
       ),
@@ -382,11 +412,14 @@ export function App() {
             [
               ['library', 'Library', 'Everything in your library folder'],
               ['pocket', 'Pocket', 'What the card will hold, in menu order'],
+              ['cartridges', 'Cartridges', 'Carts the Pocket did not recognize'],
             ] as const
           ).map(([key, label, hint]) => (
             <button key={key} role="tab" aria-selected={view === key} className={view === key ? 'on' : ''} title={hint} onClick={() => setView(key)}>
               {label}
-              {lib && <span className="count">{key === 'library' ? libraryGames.length : pocketGames.length}</span>}
+              {key === 'cartridges'
+                ? cartsInfo && cartsInfo.carts.length > 0 && <span className="count">{cartsInfo.carts.length}</span>
+                : lib && <span className="count">{key === 'library' ? libraryGames.length : pocketGames.length}</span>}
             </button>
           ))}
         </nav>
@@ -441,7 +474,7 @@ export function App() {
               <IconSearch />
               <input type="search" placeholder="Filter games" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            <div className="segmented">
+            <div className="segmented" hidden={view === 'cartridges'}>
               {FILTERS.map((f) => {
                 const n = counts[f.key];
                 if (f.key !== 'all' && f.key !== 'fav' && f.key !== 'none' && n === 0) return null;
@@ -454,7 +487,7 @@ export function App() {
               })}
             </div>
             <div className="grow" />
-            {art && art.total > 0 && (
+            {art && art.total > 0 && view !== 'cartridges' && (
               <div className="meter-box" title={art.failed ? `${art.failed} could not be downloaded. They show a title card.` : 'Box art downloaded and fitted'}>
                 <div className="meter-text">
                   {art.running ? (
@@ -538,7 +571,7 @@ export function App() {
               <div className="banner info">
                 {streaming ? (
                   <>
-                    <IconCard /> {lib.pack.reason} Favorites come first, then A to Z.
+                    <IconCard /> {lib.pack.reason} Favorites mode shows your favorites, then All games. All games has every game once, A to Z.
                   </>
                 ) : (
                   <>
@@ -592,10 +625,28 @@ export function App() {
               </div>
             )}
 
-            {lib && games.length > 0 && (
-              <VirtualGrid blocks={blocks} scroller={scroller} itemKey={(it) => it.key} renderItem={renderItem} rowHeight={ROW_H} />
+            {view === 'cartridges' ? (
+              <CartsView
+                info={cartsInfo}
+                loading={cartsLoading}
+                query={query}
+                onChangeCover={(c) => {
+                  setPickingCart(true);
+                  setPicker(cartAsGame(c));
+                }}
+                onForget={async (c) => {
+                  await api.forgetCart(c.id).catch((e) => setToast((e as Error).message));
+                  void loadCarts();
+                }}
+              />
+            ) : (
+              <>
+                {lib && games.length > 0 && (
+                  <VirtualGrid blocks={blocks} scroller={scroller} itemKey={(it) => it.key} renderItem={renderItem} rowHeight={ROW_H} />
+                )}
+                {lib && games.length > 0 && shownCount === 0 && <div className="loading">No games match this filter.</div>}
+              </>
             )}
-            {lib && games.length > 0 && shownCount === 0 && <div className="loading">No games match this filter.</div>}
           </main>
 
           <footer className="statusbar">
@@ -631,10 +682,16 @@ export function App() {
       {picker && (
         <PickerModal
           game={picker}
-          onClose={() => setPicker(null)}
+          onClose={() => {
+            setPicker(null);
+            setPickingCart(false);
+          }}
           onSaved={() => {
             setPicker(null);
-            void load(true);
+            if (pickingCart) {
+              setPickingCart(false);
+              void loadCarts();
+            } else void load(true);
           }}
         />
       )}

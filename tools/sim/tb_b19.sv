@@ -125,11 +125,14 @@ module tb_b19;
     wait (dut.state == 23 && dut.level == 8);
     $display("idx_ok %0d fav_ok %0d fav_count %0d crc %h favp %0d", dut.idx_ok, dut.fav_ok, dut.fav_count, dut.cur_crc, dut.cur_favp);
     if (!dut.fav_ok || dut.fav_count != 3 || !dut.cur_favp) errs = errs + 1;
-    press(14); $display("SELECT fav_mode %0d label %0d/%0d idx %0d rcount %0d", dut.fav_mode, dut.lbl_on, dut.lbl_sec, dut.idx, dut.rcount);
+    // boot opens on Favorites (this pack has no All games cover, so the favorites alone wrap)
+    $display("BOOT fav_mode %0d idx %0d rcount %0d", dut.fav_mode, dut.idx, dut.rcount);
     if (!dut.fav_mode || dut.rcount != 3) errs = errs + 1;
     press(3); expect_idx(1); press(3); expect_idx(2); press(3); expect_idx(0);   // Right wraps inside the favorites
-    press(14); $display("SELECT fav_mode %0d label %0d/%0d rcount %0d", dut.fav_mode, dut.lbl_on, dut.lbl_sec, dut.rcount);
-    if (dut.fav_mode || dut.lbl_sec != 28) errs = errs + 1;
+    press(14); $display("SELECT fav_mode %0d label %0d/%0d idx %0d rcount %0d", dut.fav_mode, dut.lbl_on, dut.lbl_sec, dut.idx, dut.rcount);
+    if (dut.fav_mode || dut.lbl_sec != 28 || dut.idx != 3 || dut.rcount != 9) errs = errs + 1;   // All: A to Z only
+    press(14); $display("SELECT fav_mode %0d label %0d/%0d idx %0d rcount %0d", dut.fav_mode, dut.lbl_on, dut.lbl_sec, dut.idx, dut.rcount);
+    if (!dut.fav_mode || dut.idx != 0) errs = errs + 1;
     press(6); $display("X gm_on %0d sel %0d state %0d", dut.gm_on, dut.gm_sel, dut.state);
     if (!dut.gm_on || dut.gm_sel != 0) errs = errs + 1;
     press(3); $display("RIGHT gm_sel %0d (no suspend, so Start over is skipped)", dut.gm_sel);

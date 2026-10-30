@@ -11,7 +11,14 @@ import { readManifest, type ManifestEntry } from './manifest.js';
 import { menuList, packWriter, type MenuItem } from './pack.js';
 import { fileCrc } from './roms.js';
 import { readPocketFavorites, type PocketFavorites } from './pocketfav.js';
-import { pendingMove } from './choices.js';
+import { loadChoices, pendingMove } from './choices.js';
+import { cartId, codeConfirmed, decodeHeader, headerTitle, identifyCart, readCartsCfg, savedCarts, type CartsCfg, type Identification, type SavedCart } from './carts.js';
+import { loadDats } from './dat.js';
+import { loadThumbs } from './thumbs.js';
+import { autoMatchCached, cleanTitle } from './match.js';
+import { romFingerprint } from './roms.js';
+import type { ArtRef } from './choices.js';
+
 import { PACK_PLATFORM } from './config.js';
 import { folderSpace } from './volumes.js';
 
@@ -129,8 +136,22 @@ export interface SyncPlan {
     /** Entries in the favorites and played sections at the top. */
     favCount: number;
     playedCount: number;
+    /** Entries in the browsable menu. The rest are cartridge-only entries. */
+    listCount: number;
     /** Left out of the pack because their path is too long for the core. */
     skipped: string[];
+  };
+  /**
+   * Carts seen on the Pocket that it did not recognize (carts.cfg, and the ones saved
+   * before). Identified ones go in a v7 pack as cartridge-only entries.
+   */
+  carts: {
+    cfg: { file: string; n: number; records: number; newCarts: number; misreads: number; sha: string } | null;
+    entries: { id: string; headerTitle: string; title: string; status: 'exact' | 'guessed' }[];
+    /** Carts that are a game you have, so the pack already knows them. */
+    inLibrary: { id: string; headerTitle: string; game: string }[];
+    /** Carts nothing fits. The Pocket shows the default cartridge image with their header title. */
+    unidentified: { id: string; headerTitle: string }[];
   };
   space: {
     freeBytes: number | null;
@@ -170,7 +191,95 @@ export interface PlanResult {
   /** Games in pack order, cut to what the pack holds. */
   /** Pack entries in menu order, with their section. In v7 a favorite is listed twice. */
   packItems: MenuItem<Game>[];
+  /** Cartridge-only entries, after the browsable list (v7). */
+  cartItems: CartEntry[];
   manifestPlaced: ManifestEntry[];
+}
+
+/** A cart seen on the Pocket, as it goes in the pack. */
+export interface CartEntry {
+  id: string;
+  headerTitle: string;
+  title: string;
+  art: ArtRef | null;
+  fingerprint: Buffer;
+  isGb: boolean;
+  status: 'exact' | 'guessed';
+}
+
+export interface CartView {
+  id: string;
+  headerTitle: string;
+  code: string | null;
+  cgb: number;
+  /** Saved in the app already, or only in carts.cfg until the next sync. */
+  pending: boolean;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  timesSeen: number;
+  identified: Identification | null;
+  /** The game in your library it is, when it is one. */
+  inLibrary: string | null;
+  title: string;
+  art: ArtRef | null;
+  /** The cover the app found, before any you picked. */
+  autoArt: ArtRef | null;
+  /** You picked a cover for it. Then it goes in the pack even if the app could not name it. */
+  picked: boolean;
+  /** Its title with nothing edited. */
+  defaultTitle: string;
+  fingerprint: Buffer;
+}
+
+/**
+ * Every cart the app knows about for this card: saved ones, and new ones in carts.cfg.
+ * Each one says whether it is a game in your library, what it was identified as, and
+ * the cover it gets (yours first, then the one the app found).
+ */
+export async function cartViews(card: string | null, menu: Game[]): Promise<{ cfg: CartsCfg | null; carts: CartView[] }> {
+  const [dats, thumbs] = await Promise.all([loadDats(), loadThumbs()]);
+  const cfg = card ? readCartsCfg(card) : null;
+  const saved = savedCarts(dats);
+  const savedIds = new Set(saved.map((c) => c.id));
+  const choices = loadChoices().games;
+  // What the library already covers: exact revision, or the same title.
+  const exact = new Map<string, string>();
+  const byTitle = new Map<string, string>();
+  for (const g of menu) {
+    const f = romFingerprint(g.sourcePath);
+    if (f.every((b) => b === 0)) continue;
+    exact.set(f.subarray(0, 4).toString('hex'), g.title);
+    byTitle.set(f.subarray(4, 8).toString('hex'), g.title);
+  }
+  const view = (header: Buffer, s: SavedCart | null): CartView => {
+    const d = decodeHeader(header);
+    const identified = s ? s.identified : identifyCart(d, dats);
+    const dat = identified ? dats.byCrc.get(identified.crc) : undefined;
+    const auto = identified ? autoMatchCached(thumbs, identified.name, identified.system, dat) : null;
+    const autoArt: ArtRef | null = auto?.thumb ? { kind: 'thumb', repo: auto.thumb.repo, name: auto.thumb.name } : null;
+    const choice = choices[d.id] ?? {};
+    return {
+      id: d.id,
+      headerTitle: headerTitle(d, identified),
+      code: codeConfirmed(d, identified) ? d.code : null,
+      cgb: d.cgb,
+      pending: !s,
+      firstSeen: s?.firstSeen ?? null,
+      lastSeen: s?.lastSeen ?? null,
+      timesSeen: s?.timesSeen ?? 0,
+      identified,
+      inLibrary: exact.get(d.fingerprint.subarray(0, 4).toString('hex')) ?? byTitle.get(d.fingerprint.subarray(4, 8).toString('hex')) ?? null,
+      title: choice.title ?? (identified ? cleanTitle(identified.name) : headerTitle(d, identified)),
+      art: choice.art ?? autoArt,
+      autoArt,
+      picked: choice.art !== undefined,
+      defaultTitle: identified ? cleanTitle(identified.name) : headerTitle(d, identified),
+      fingerprint: d.fingerprint,
+    };
+  };
+  const carts = saved.map((s) => view(Buffer.from(s.header, 'hex'), s));
+  for (const h of cfg?.records ?? []) if (!savedIds.has(cartId(h))) carts.push(view(h, null));
+  return { cfg, carts };
 }
 
 export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
@@ -306,8 +415,19 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
   const menu = library.games.filter((g) => g.cardState !== 'cardKept');
   const list = menuList(menu, playHistory(card), writer.version >= 7);
   const packItems = list.filter((it) => !it.game.problems.length).slice(0, writer.maxGames);
+  // Carts seen on the Pocket: the identified ones that are not games you have go after the list (v7 only).
+  const { cfg: cartsCfg, carts } = await cartViews(card, menu);
+  const cartItems: CartEntry[] =
+    writer.version >= 7
+      ? carts
+          .filter((c) => (c.identified || c.picked) && !c.inLibrary)
+          .map((c) => ({ id: c.id, headerTitle: c.headerTitle, title: c.title, art: c.art, fingerprint: c.fingerprint, isGb: !(c.cgb & 0x80), status: c.identified?.status ?? 'guessed' }))
+          .slice(0, Math.max(0, writer.maxGames - packItems.length))
+      : [];
   const packGames = packItems.map((it) => it.game);
-  const packBytes = packItems.length ? writer.expectedSize(packItems.length) : 0;
+  const entryCount = packItems.length + cartItems.length;
+  // A pack with favorites also carries the All games tile (v7).
+  const packBytes = entryCount ? writer.expectedSize(entryCount, packItems.some((it) => it.section === 'favorite')) : 0;
 
   const block = clusterSize(card);
   const copyBytes = copy.reduce((n, c) => n + c.size, 0);
@@ -354,17 +474,33 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       version: writer.version,
       file: COVERS_REL.split(path.sep).join('/'),
       bytes: packBytes,
-      count: packGames.length,
+      count: entryCount,
+      listCount: packItems.length,
       limit: writer.maxGames,
       streaming: library.pack.streaming,
       reason: library.pack.reason,
-      titles: packGames.map((g) => g.title),
-      crcs: packGames.map((g) => g.crc),
+      titles: [...packGames.map((g) => g.title), ...cartItems.map((c) => c.title)],
+      crcs: [...packGames.map((g) => g.crc), ...cartItems.map((c) => c.id)],
       favCount: packItems.filter((it) => it.section === 'favorite').length,
       playedCount: packItems.filter((it) => it.section === 'played').length,
       skipped: menu.filter((g) => g.problems.length).map((g) => g.file),
     },
     space: { freeBytes, neededBytes, enough: enoughAsIs || removeFirst, removeFirst },
+    carts: {
+      cfg: cartsCfg
+        ? {
+            file: cartsCfg.file,
+            n: cartsCfg.n,
+            records: cartsCfg.records.length,
+            newCarts: carts.filter((c) => c.pending).length,
+            misreads: cartsCfg.misreads,
+            sha: cartsCfg.sha,
+          }
+        : null,
+      entries: cartItems.map((c) => ({ id: c.id, headerTitle: c.headerTitle, title: c.title, status: c.status })),
+      inLibrary: carts.filter((c) => c.inLibrary).map((c) => ({ id: c.id, headerTitle: c.headerTitle, game: c.inLibrary! })),
+      unidentified: carts.filter((c) => !c.identified && !c.picked && !c.inLibrary).map((c) => ({ id: c.id, headerTitle: c.headerTitle })),
+    },
     signature: '',
   };
   plan.signature = crypto
@@ -377,11 +513,13 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
         keptCard.map((k) => [k.crc, k.cardFile]),
         suspends.map((x) => [x.file, x.size, x.oldCrc, x.newCrc]),
         pocketFav?.sha ?? null,
+        cartsCfg?.sha ?? null,
+        cartItems.map((c) => [c.id, c.title, c.art]),
         writer.version,
         packItems.map((it) => [it.game.crc, it.game.title, it.game.file, it.game.art, it.section, it.game.favorite]),
       ]),
     )
     .digest('hex')
     .slice(0, 16);
-  return { plan, library, packItems, manifestPlaced: placed };
+  return { plan, library, packItems, cartItems, manifestPlaced: placed };
 }

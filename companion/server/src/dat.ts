@@ -11,6 +11,8 @@ export interface DatGame {
   system: 'gb' | 'gbc';
   size: number;
   crc: string;
+  /** The cart's game code (0x13F to 0x142), when the DAT has it. Few entries do. */
+  serial?: string;
 }
 
 const DATS: { system: 'gb' | 'gbc'; file: string }[] = [
@@ -28,12 +30,13 @@ export function parseDat(text: string, system: 'gb' | 'gbc'): DatGame[] {
     const body = m[1];
     const name = body.match(/^\s*name "((?:[^"\\]|\\.)*)"/m)?.[1];
     if (!name) continue;
+    const serial = body.match(/^\s*serial "([^"]*)"/m)?.[1];
     const romRe = /rom \((.*?)\)\s*$/gm;
     let r: RegExpExecArray | null;
     while ((r = romRe.exec(body))) {
       const crc = r[1].match(/\bcrc ([0-9A-Fa-f]{8})\b/)?.[1];
       const size = Number(r[1].match(/\bsize (\d+)/)?.[1] ?? 0);
-      if (crc) out.push({ name, system, size, crc: crc.toUpperCase() });
+      if (crc) out.push({ name, system, size, crc: crc.toUpperCase(), ...(serial ? { serial: serial.toUpperCase() } : {}) });
     }
   }
   return out;

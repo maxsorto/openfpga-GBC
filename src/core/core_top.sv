@@ -481,6 +481,8 @@ always_comb begin
     32'hF2000000: begin bridge_rd_data = int_bridge_read_data;        end
     32'hF3xxxxxx: begin bridge_rd_data = picker_param_rd;             end
     32'hF4xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker debug log
+    32'hF5xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker favorites.cfg
+    32'hF6xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker carts.cfg
     default:      begin bridge_rd_data = 0;                           end
   endcase
 end
@@ -1119,12 +1121,14 @@ gb gb
 
 wire [15:0] audio_l, audio_r;
 logic       picker_snd_open, picker_snd_close;   // cover picker pause chime toggles
+logic       picker_snd_ins, picker_snd_rem;     // cover picker: a cart seats / leaves
 
 wire [15:0] game_l = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_L;
 wire [15:0] game_r = (fast_forward && ~ff_snd_en) ? 16'd0 : GB_AUDIO_R;
 // pause menu chime, mixed in with saturation
 wire signed [15:0] chime;
-ui_chime ui_chime (.clk(clk_sys), .t_open(picker_snd_open), .t_close(picker_snd_close), .out(chime));
+ui_chime ui_chime (.clk(clk_sys), .t_open(picker_snd_open), .t_close(picker_snd_close),
+                   .t_ins(picker_snd_ins), .t_rem(picker_snd_rem), .out(chime));
 function [15:0] sat_add(input [15:0] a, input signed [15:0] b);
   reg signed [16:0] t;
   begin
@@ -1352,6 +1356,8 @@ cover_picker cover_picker (
   .ovl_dim                    ( picker_dim                 ),
   .snd_open                   ( picker_snd_open            ),
   .snd_close                  ( picker_snd_close           ),
+  .snd_ins                    ( picker_snd_ins             ),
+  .snd_rem                    ( picker_snd_rem             ),
   .clk_sys                    ( clk_sys                    ),
   .sd_ce                      ( ce_cpu2x                   ),
   .sd_own                     ( picker_sd_own              ),

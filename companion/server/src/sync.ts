@@ -24,7 +24,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { BACKUPS_KEPT, BACKUP_DIR, COVERS_REL, PACK_PLATFORM, SLOW_IO_MS } from './config.js';
-import { packBlob } from './art.js';
+import { loadArt, packArt } from './art.js';
+import { placeholderImage } from './image.js';
+import { allGamesTileBlob, tilePicks } from './tile.js';
+import type { RGBImage } from './pillow.js';
+import { cartsPath, emptyCartsCfg, mergeCarts, readCartsCfg } from './carts.js';
+import { loadDats } from './dat.js';
+import type { ArtRef } from './choices.js';
 import { ChunkedWriter, copyFileChunked, hashFile, isOurPack, rememberWrittenPack, removeAppleDouble, sleep, withoutNewSidecar } from './io.js';
 import { migrateChoices, updateChoices } from './choices.js';
 import { emptyFavorites, favoritesPath } from './pocketfav.js';
@@ -189,7 +195,8 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   emit({ type: 'phase', phase: 'check', message: 'Checking the card and the library' });
   // Let the first event reach the app before the plan is worked out again.
   await sleep(0);
-  const { plan, packItems, manifestPlaced } = await makePlan(req);
+  const { plan, packItems, cartItems, manifestPlaced } = await makePlan(req);
+  const entryCount = packItems.length + cartItems.length;
   if (req.signature && req.signature !== plan.signature) {
     throw new Error('The library or the card changed since this plan was made. Close this and sync again to see the new plan.');
   }
@@ -209,6 +216,17 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
     updateChoices(Object.fromEntries(plan.pocketFavorites.changes.map((c) => [c.crc, { favorite: c.favorite }])));
     const on = plan.pocketFavorites.changes.filter((c) => c.favorite).length;
     emit({ type: 'log', level: 'info', message: `Saved ${plan.pocketFavorites.changes.length} favorite changes from the Pocket (${on} starred, ${plan.pocketFavorites.changes.length - on} unstarred).` });
+  }
+
+  // Carts the Pocket logged: save them in the app first, so emptying carts.cfg later loses nothing.
+  let cartsSaved = false;
+  if (plan.carts.cfg && plan.carts.cfg.n > 0) {
+    const cfg = readCartsCfg(card);
+    if (!cfg || cfg.sha !== plan.carts.cfg.sha) throw new Error('carts.cfg changed since this plan was made. Close this and sync again.');
+    const { added, updated } = mergeCarts(cfg.records, await loadDats());
+    cartsSaved = true;
+    if (cfg.records.length) emit({ type: 'log', level: 'info', message: `Saved ${added} new ${added === 1 ? 'cart' : 'carts'} from the Pocket${updated ? `, and saw ${updated} again` : ''}.` });
+    if (cfg.misreads) emit({ type: 'log', level: 'info', message: `Skipped ${cfg.misreads} ${cfg.misreads === 1 ? 'cart that was' : 'carts that were'} misread (bad contacts), not real carts.` });
   }
   fs.mkdirSync(romDir, { recursive: true });
 
@@ -329,33 +347,67 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   const tmp = path.join(path.dirname(target), '.covers.bin.part');
   let packBytes = 0;
   let backup: string | null = null;
-  if (packItems.length) {
-    const total = writer.expectedSize(packItems.length);
-    emit({ type: 'phase', phase: 'pack', message: `Building and writing covers.bin (pack v${writer.version}, ${packItems.length} entries)` });
+  if (entryCount) {
+    const withTile = packItems.some((it) => it.section === 'favorite');
+    const total = writer.expectedSize(entryCount, withTile);
+    emit({ type: 'phase', phase: 'pack', message: `Building and writing covers.bin (pack v${writer.version}, ${entryCount} entries)` });
     emit({ type: 'bytes', phase: 'pack', done: 0, total });
     try {
       const out = await ChunkedWriter.open(tmp, (n) => emit({ type: 'bytes', phase: 'pack', done: n, total }), slowMs);
       let written: { bytes: number; sha: string };
       try {
-        const games: StreamGame[] = packItems.map(({ game: g, section }) => ({
-          title: g.title,
-          romFile: g.file,
-          platform: g.platform,
-          romSize: g.size,
-          crc: g.crc,
-          favorite: g.favorite,
-          section,
-          fingerprint: romFingerprint(g.sourcePath),
-          blob: async () => {
-            try {
-              return await packBlob(g.art, g.title);
-            } catch (e: any) {
-              emit({ type: 'log', level: 'warn', message: `${g.title}: art not available (${e?.message ?? e}). Using a title card.` });
-              return packBlob(null, g.title);
-            }
-          },
-        }));
-        await writer.write(games, (chunk) => out.write(chunk), { logPlatform: PACK_PLATFORM });
+        // Each entry's art and accent. The accent goes in the entry, and entries are written
+        // before any art, so it is worked out first; the art is cached, so this costs little.
+        const artOf = async (ref: ArtRef | null, title: string, warn: boolean) => {
+          try {
+            return await packArt(ref, title);
+          } catch (e: any) {
+            if (warn) emit({ type: 'log', level: 'warn', message: `${title}: art not available (${e?.message ?? e}). Using a title card.` });
+            return packArt(null, title);
+          }
+        };
+        const accents: number[] = [];
+        for (const { game: g } of packItems) accents.push((await artOf(g.art, g.title, false)).accent);
+        for (const c of cartItems) accents.push((await artOf(c.art, c.title, false)).accent);
+        const games: StreamGame[] = [
+          ...packItems.map(({ game: g, section }, i) => ({
+            title: g.title,
+            romFile: g.file,
+            platform: g.platform,
+            romSize: g.size,
+            crc: g.crc,
+            favorite: g.favorite,
+            section,
+            accent: accents[i],
+            hasArt: !!g.art && g.art.kind !== 'placeholder',
+            fingerprint: romFingerprint(g.sourcePath),
+            blob: async () => (await artOf(g.art, g.title, true)).blob,
+          })),
+          // Carts seen on the Pocket with no ROM on the card: found only by Play Cartridge.
+          ...cartItems.map((c, i) => ({
+            title: c.title,
+            romFile: c.isGb ? 'cart.gb' : 'cart.gbc',
+            platform: PACK_PLATFORM,
+            romSize: 0,
+            crc: c.id,
+            section: 'cart' as const,
+            cartOnly: true,
+            accent: accents[packItems.length + i],
+            fingerprint: c.fingerprint,
+            blob: async () => (await artOf(c.art, c.title, true)).blob,
+          })),
+        ];
+        // Favorites mode's closing cover: a mosaic of 9 covers from the A to Z list (v7).
+        let allGamesTile: Buffer | undefined;
+        if (writer.version >= 7 && withTile) {
+          const covers: RGBImage[] = [];
+          for (const pick of tilePicks(games)) {
+            const g = packItems.find((it) => it.game.crc === pick.crc)!.game;
+            covers.push(await loadArt(g.art, g.title).catch(() => placeholderImage(g.title)));
+          }
+          allGamesTile = allGamesTileBlob(covers);
+        }
+        await writer.write(games, (chunk) => out.write(chunk), { logPlatform: PACK_PLATFORM, allGamesTile });
         emit({ type: 'bytes', phase: 'pack', done: out.bytesWritten, total, flushing: true, label: 'Flushing to the card' });
         written = await out.close();
       } catch (e) {
@@ -390,11 +442,11 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       syncDir(path.dirname(target));
       const st = fs.statSync(target);
       const summary = readPackSummary(readHead(target, PACK_HEAD_MAX));
-      if (st.size !== packBytes || !summary || summary.version !== writer.version || summary.count !== packItems.length) {
+      if (st.size !== packBytes || !summary || summary.version !== writer.version || summary.count !== entryCount) {
         throw new Error('Verify failed: covers.bin on the card does not match after the rename.');
       }
       rememberWrittenPack(target, written.sha);
-      emit({ type: 'log', level: 'info', message: `covers.bin verified: pack v${summary.version}, ${packBytes.toLocaleString()} bytes, ${summary.count} games.` });
+      emit({ type: 'log', level: 'info', message: `covers.bin verified: pack v${summary.version}, ${packBytes.toLocaleString()} bytes, ${summary.count} entries.` });
     } finally {
       await fsp.rm(tmp, { force: true });
       removeAppleDouble(tmp);
@@ -404,6 +456,24 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   }
   const manifest = { version: 1 as const, placed: [...placed.values()] };
   const manifestText = writeManifest(card, manifest);
+
+  // The carts are saved in the app and in the pack now: empty carts.cfg, if it did not change.
+  if (cartsSaved && plan.carts.cfg) {
+    const file = cartsPath(card);
+    const now = (() => {
+      try {
+        return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      } catch {
+        return null;
+      }
+    })();
+    if (now === plan.carts.cfg.sha) {
+      await withoutNewSidecar(file, () => writeFileSynced(file, emptyCartsCfg()));
+      emit({ type: 'log', level: 'info', message: 'carts.cfg on the card is empty again.' });
+    } else {
+      emit({ type: 'log', level: 'warn', message: 'carts.cfg changed during sync, so it was left as it is. Sync again to pick up the new carts.' });
+    }
+  }
 
   // The Pocket's favorite changes are in the app and in the pack now: empty the file.
   if (plan.pocketFavorites && plan.pocketFavorites.records > 0) {
@@ -438,7 +508,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
     type: 'done',
     target,
     bytes: packBytes,
-    count: packItems.length,
+    count: entryCount,
     copied: plan.copy.length,
     removed: plan.remove.length,
     unchanged: plan.unchanged,

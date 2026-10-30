@@ -7,7 +7,7 @@ import type { ArtRef } from './choices.js';
 import { decodeImage, encodePng, placeholderImage } from './image.js';
 import type { Lane } from './limit.js';
 import { fit, quantizePreview, type RGBImage } from './pillow.js';
-import { BLOB_BYTES, artBlob } from './pack-common.js';
+import { BLOB_BYTES, artBlobAndAccent } from './pack-common.js';
 import { getBoxart } from './thumbs.js';
 
 export async function loadArt(ref: ArtRef | null, title: string, lane: Lane = 'high'): Promise<RGBImage> {
@@ -94,24 +94,34 @@ function remember(key: string, png: Buffer): void {
  * on disk. Same key rules as the previews: art by reference, title cards by title.
  */
 export async function packBlob(ref: ArtRef | null, title: string): Promise<Buffer> {
+  return (await packArt(ref, title)).blob;
+}
+
+/**
+ * The art blob and the cover's accent color (RGB565), cached together: the blob, then
+ * the accent as 2 bytes. Older cache files (blob only) are built again.
+ */
+export async function packArt(ref: ArtRef | null, title: string): Promise<{ blob: Buffer; accent: number }> {
   const h = crypto.createHash('sha1').update(previewKey(ref, title, 0)).digest('hex');
   const file = path.join(BLOB_DIR, h.slice(0, 2), `${h}.bin`);
   try {
     const b = fs.readFileSync(file);
-    if (b.length === BLOB_BYTES) return b;
+    if (b.length === BLOB_BYTES + 2) return { blob: b.subarray(0, BLOB_BYTES), accent: b.readUInt16LE(BLOB_BYTES) };
   } catch {
     // not built yet
   }
-  const blob = artBlob(await loadArt(ref, title));
+  const { blob, accent } = artBlobAndAccent(await loadArt(ref, title));
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, blob);
+    const tail = Buffer.alloc(2);
+    tail.writeUInt16LE(accent, 0);
+    fs.writeFileSync(tmp, Buffer.concat([blob, tail]));
     fs.renameSync(tmp, file);
   } catch {
     // The cache only saves time.
   }
-  return blob;
+  return { blob, accent };
 }
 
 /* ---------- Fetching art for the whole library in the background ---------- */

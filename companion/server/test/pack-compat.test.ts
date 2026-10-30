@@ -10,8 +10,22 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PYTHON, writeFakeRom, writeFixturePng } from './fixtures.js';
 import { decodeImage, placeholderImage } from '../src/image.js';
-import { artBlob as artBlobOf } from '../src/pack-common.js';
-import { buildPack, compareTitles, expectedPackSize, packWriter, readPackSummary, BLOB_BYTES, ENTRY_BYTES, NO_SECTION, STRIDE_V7, type PackGame, type StreamGame } from '../src/pack.js';
+import { artBlobAndAccent } from '../src/pack-common.js';
+import { allGamesTileBlob, tilePicks } from '../src/tile.js';
+import {
+  buildPack,
+  compareTitles,
+  expectedPackSize,
+  fingerprintTableOffset,
+  packWriter,
+  readPackSummary,
+  BLOB_BYTES,
+  ENTRY_BYTES,
+  NO_SECTION,
+  STRIDE_V7,
+  type PackGame,
+  type StreamGame,
+} from '../src/pack.js';
 import { crc32, romFingerprint } from '../src/roms.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -37,8 +51,9 @@ function makeFixture(name: string, roms: [string, number][], covers: [string, nu
   return f;
 }
 
-function runPython(f: Fixture, out: string, v7 = false): Buffer {
-  execFileSync(PYTHON, [MAKE_PACK, '--roms', f.roms, '--covers', f.covers, '--out', out, ...(v7 ? ['--v7'] : [])], { stdio: 'pipe' });
+function runPython(f: Fixture, out: string, v7 = false, favorites: string[] = []): Buffer {
+  const fav = favorites.flatMap((x) => ['--favorite', x]);
+  execFileSync(PYTHON, [MAKE_PACK, '--roms', f.roms, '--covers', f.covers, '--out', out, ...(v7 ? ['--v7'] : []), ...fav], { stdio: 'pipe' });
   return fs.readFileSync(out);
 }
 
@@ -184,7 +199,10 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
 
   const chunks: Buffer[] = [];
   let biggest = 0;
-  const stream: StreamGame[] = games.map(({ art, ...g }) => ({ ...g, blob: async () => artBlobOf(art) }));
+  const stream: StreamGame[] = games.map(({ art, ...g }) => {
+    const { blob, accent } = artBlobAndAccent(art);
+    return { ...g, accent, blob: async () => blob };
+  });
   const n = await v7.write(stream, (c) => {
     chunks.push(c);
     biggest = Math.max(biggest, c.length);
@@ -203,8 +221,9 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
   const present = idx.starts.filter((x) => x !== NO_SECTION);
   assert.deepEqual(present, [...present].sort((a, b) => a - b));
 
-  // Nothing close to the whole pack is ever one buffer: the largest piece is the path structs.
-  assert.ok(biggest <= Math.max(STRIDE_V7, 40 * 3 * 256 + 256), `largest chunk ${biggest}`);
+  // Nothing close to the whole pack is ever one buffer. The largest pieces are fixed size:
+  // one cover, the path structs, or the tail (fingerprints and the 3 default cart images).
+  assert.ok(biggest <= 4 * STRIDE_V7, `largest chunk ${biggest}`);
 });
 
 test('pack v7 fingerprints (FPR2) match make_cover_pack.py --v7, with a known title and a ROM shorter than the header', async () => {
@@ -233,10 +252,59 @@ test('pack v7 fingerprints (FPR2) match make_cover_pack.py --v7, with a known ti
   assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
   const s = readPackSummary(ts)!;
   assert.equal(ts.toString('ascii', 80, 84), 'FPR2');
-  assert.deepEqual(s.fingerprints, { offset: ts.length - 2 * 8, count: 2 });
+  assert.deepEqual(s.fingerprints, { offset: fingerprintTableOffset(2), count: 2 });
   const rec = (i: number) => [...ts.subarray(s.fingerprints!.offset + i * 8, s.fingerprints!.offset + i * 8 + 8)];
   assert.deepEqual(s.titles, ['Known Header', 'Tiny']);
   // zlib CRC32 of b"PM_CRYSTAL\0" is 0xFB07C0C0, stored little-endian.
   assert.deepEqual(rec(0), [0x12, 0x34, 0xab, 0x80, 0xc0, 0xc0, 0x07, 0xfb]);
   assert.deepEqual(rec(1), [0, 0, 0, 0, 0, 0, 0, 0]);
+});
+
+test('pack v7 with favorites matches make_cover_pack.py --v7 --favorite, All games tile included', async () => {
+  const stems = ['Alleyway', 'Balloon Kid', 'Castlevania', 'Donkey Kong', 'Faceball', 'Gargoyle', 'Kirby', 'Mario Golf', 'Metroid II', 'Pinball', 'Shantae', 'Tetris', 'Wario Land', 'Zelda'];
+  const roms: [string, number][] = stems.map((n, i) => [`${n}.${i % 2 ? 'gbc' : 'gb'}`, 4096 + i * 256]);
+  const covers: [string, number, number][] = stems.map((n, i) => [`${n}.png`, 70 + (i % 4) * 30, 60 + (i % 3) * 40]);
+  const f = makeFixture('v7-favorites-tile', roms, covers);
+  const favorites = ['Tetris', 'Kirby'];
+  const py = runPython(f, path.join(OUT, 'v7-favorites-tile', 'python.bin'), true, favorites);
+
+  // The app's menu: the favorites section, then every game A to Z with favorites again.
+  const all = letterOrder(await tsGames(f, 2047)).map((g) => ({ ...g, hasArt: true, favorite: favorites.includes(g.title) }));
+  const list = [...all.filter((g) => g.favorite).map((g) => ({ ...g, section: 'favorite' as const })), ...all.map((g) => ({ ...g, section: 'az' as const }))];
+  const v7 = packWriter(7);
+  const ts = v7.build(list);
+  assert.equal(ts.length, v7.expectedSize(16, true));
+  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+
+  const s = readPackSummary(ts)!;
+  assert.deepEqual(s.titles.slice(0, 2), ['Kirby', 'Tetris']);
+  assert.equal(s.index!.favCount, 2);
+  assert.equal(s.carts!.flags, 3); // carts.cfg path, and the tile
+  const tileAt = s.carts!.artOffset + 3 * STRIDE_V7;
+  assert.equal(ts.length, tileAt + STRIDE_V7);
+  const tile = ts.subarray(tileAt, tileAt + BLOB_BYTES);
+  for (let i = 0; i < tile.length; i += 2) assert.notEqual(tile.readUInt16LE(i), 0);
+
+  // Streamed, with the tile built by the caller, the bytes are the same.
+  const blob = allGamesTileBlob(tilePicks(list).map((g) => g.art));
+  const chunks: Buffer[] = [];
+  const stream: StreamGame[] = list.map(({ art, ...g }) => {
+    const ba = artBlobAndAccent(art);
+    return { ...g, accent: ba.accent, blob: async () => ba.blob };
+  });
+  await v7.write(stream, (c) => void chunks.push(c), { allGamesTile: blob });
+  assert.equal(firstDiff(Buffer.concat(chunks), py), -1, 'streamed matches Python');
+  await assert.rejects(v7.write(stream, () => undefined), /All games tile/);
+});
+
+test('All games tile picks: 9 covers spread across the A to Z list, not favorites, real art first', () => {
+  const e = (title: string, o: { favorite?: boolean; hasArt?: boolean; section?: 'favorite' | 'az' } = {}) => ({ title, romFile: `${title}.gb`, platform: 'gbc', romSize: 1, section: o.section ?? ('az' as const), favorite: o.favorite, hasArt: o.hasArt ?? true });
+  const az = Array.from({ length: 27 }, (_, i) => e(`Game ${String(i).padStart(2, '0')}`, { favorite: i === 4 }));
+  const picks = tilePicks([e('Game 04', { favorite: true, section: 'favorite' }), ...az]).map((g) => g.title);
+  // 26 games that are not favorites: index (2i + 1) * 26 / 18, the middle of each ninth.
+  assert.deepEqual(picks, ['Game 01', 'Game 05', 'Game 08', 'Game 11', 'Game 14', 'Game 16', 'Game 19', 'Game 22', 'Game 25']);
+  assert.ok(!picks.includes('Game 04'));
+  // Fewer than 9 with art: any game is used, still spread out; a short list repeats evenly.
+  const few = [e('A', { hasArt: false }), e('B'), e('C', { hasArt: false })];
+  assert.deepEqual(tilePicks(few).map((g) => g.title), ['A', 'A', 'A', 'B', 'B', 'B', 'C', 'C', 'C']);
 });

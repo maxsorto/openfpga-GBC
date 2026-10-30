@@ -6,7 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CACHE_DIR, DATA_DIR, ensureDirs } from './config.js';
 import { artStatus, fittedPreview, saveCustomArt, warmArt, type ArtWarmItem } from './art.js';
-import { isArtRef, markMigrationsSeen, updateChoices, type ArtRef, type ChoicePatch } from './choices.js';
+import { isArtRef, loadChoices, markMigrationsSeen, updateChoices, type ArtRef, type ChoicePatch } from './choices.js';
+import { forgetCart } from './carts.js';
+import { cartViews } from './plan.js';
 import { smallJpeg } from './image.js';
 import { buildLibrary } from './library.js';
 import { search } from './match.js';
@@ -83,6 +85,39 @@ app.get('/api/plan', async (c) => {
 app.post('/api/refresh-databases', async (c) => {
   const [d, t] = await Promise.all([loadDats(true), loadThumbs(true)]);
   return c.json({ dats: d.sources, thumbs: t.sources });
+});
+
+/** Carts seen on the Pocket that it did not recognize, saved and new (in carts.cfg on the card). */
+app.get('/api/carts', async (c) => {
+  const card = c.req.query('card') || null;
+  const library = loadSettings().libraryRoot;
+  try {
+    const lib = library || card ? await buildLibrary({ library, card }) : null;
+    const menu = lib ? lib.games.filter((g) => g.cardState !== 'cardKept') : [];
+    const { cfg, carts } = await cartViews(card, menu);
+    const choices = loadChoices().games;
+    return c.json({
+      cfg: cfg ? { file: cfg.file, n: cfg.n, records: cfg.records.length } : null,
+      carts: carts.map((v) => {
+        const picked = choices[v.id]?.art;
+        return {
+          ...v,
+          fingerprint: v.fingerprint.toString('hex'),
+          // The chip: your own pick wins; otherwise how sure the app is.
+          status: picked ? (picked.kind === 'custom' ? 'custom' : picked.kind === 'placeholder' ? 'none' : 'chosen') : v.identified ? v.identified.status : 'none',
+          titleEdited: choices[v.id]?.title !== undefined,
+        };
+      }),
+    });
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+app.post('/api/carts/forget', async (c) => {
+  const body = await c.req.json<{ id?: string }>().catch(() => ({ id: undefined }));
+  if (!body?.id || !/^[0-9A-F]{8}$/.test(body.id)) return fail(c, 'Bad cart id');
+  return c.json({ ok: forgetCart(body.id) });
 });
 
 /** The app showed these "new dump, kept your star" notes. */

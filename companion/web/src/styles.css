@@ -2016,3 +2016,23 @@ button.link.small {
 [data-theme='gbc'] .slot-no.again {
   box-shadow: 0 0 0 2px var(--accent);
 }
+
+[hidden] {
+  display: none !important;
+}
+
+/* Cartridges view: the same label well as games, with a row of actions. */
+.carts-grid {
+  margin-top: 4px;
+}
+.cart-card {
+  height: auto;
+}
+.cart-title {
+  cursor: default;
+}
+.cart-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}
