@@ -194,6 +194,8 @@ wire press_up = cont1_key[0] & ~key_1[0], press_dn = cont1_key[1] & ~key_1[1];
 wire press_l  = cont1_key[8] & ~key_1[8];       // L trigger: pause overlay (R is fast forward)
 wire press_x  = cont1_key[6] & ~key_1[6];       // X: the selected game's options
 wire press_sel = cont1_key[14] & ~key_1[14];    // Select: All / Favorites
+wire press_y  = cont1_key[7] & ~key_1[7];       // Y: grid view on / off
+wire press_r  = cont1_key[9] & ~key_1[9];       // L / R in the menu: previous / next letter
 
 // left/right with hold-to-repeat: first step on press, then every 5 frames after 20 frames
 reg [5:0] rep = 0;
@@ -360,6 +362,23 @@ reg  [1:0]  art_try = 0;           // art loader: retries left for this game
 reg         pend_l = 0, pend_r = 0, pend_a = 0;   // presses that arrived while the loader was busy
 reg         pend_u = 0, pend_d = 0;               // Up / Down: jump to the previous / next section
 reg         pend_x = 0, pend_s = 0;               // X: options, Select: list mode
+reg         pend_y = 0, pend_b = 0;               // Y: grid view; B: back to the cover flow
+reg         pend_jl = 0, pend_jr = 0;             // L / R: letter jumps
+// grid view: 4 by 2 cells of 72 px (pitch 76 by 94) above the title block, the selection drawn as an 80 px "pop"
+// over its cell (free cover 1); the cover flow's math is bypassed while it is on. State here, motion further down.
+reg         grid_pref = 0, grid = 0;              // wanted (Y); drawn (set by the morph in, cleared by the morph out)
+reg         g_morph = 0, g_min = 0; reg [3:0] g_mf = 0;     // morph running, going in, frame
+reg         g_move = 0; reg [2:0] g_vf = 0;                 // the pop sliding to another cell
+reg         g_scroll = 0, g_sdn = 0; reg [2:0] g_sf = 0;    // the rows sliding one pitch, down
+reg  [8:0]  g_top = 0;             // list row (4 games) shown as the top lattice row
+reg         g_up = 0;              // during a scroll up the three lattice rows start one row above g_top
+reg  signed [7:0] lat_y = 0;       // the rows' shift during a scroll
+reg  [4:0]  lat_b = 0, side_b = 0; // lattice / flow side cover brightness during the morph
+reg  signed [10:0] p_x = 0, p_y = 0, p_fx = 0, p_fy = 0, p_tx = 0, p_ty = 0; reg [7:0] p_s = 0, p_fs = 0, p_ts = 0;
+reg         g_go = 0, g_go1 = 0, g_go2 = 0; reg [1:0] g_kind = 0;   // from the FSM: 0 idx changed, 1 morph in, 2 out
+wire        g_anim = g_morph | g_move | g_scroll;
+wire        grid_draw = grid | g_morph;
+wire signed [9:0] g_base = $signed({1'b0, g_top}) - $signed({9'd0, g_up});   // list row of lattice row 0
 // letter index (pack v7, header area at offset 16): section 0 = the top of the list (played and favorites),
 // sections 1..27 = the first game whose title starts with '#' (not a letter) or A..Z
 reg  [10:0] sec_start [0:27]; reg [27:0] sec_ok = 0;
@@ -416,8 +435,8 @@ picker_dpram #(.WIDTH(12), .ADDR(CB)) tag_ram (
     .rclk(clk_74a), .raddr(tag_ra), .q(tag_q));
 reg  [10:0] cg [0:3];              // games of the four visible covers (cover flow block below)
 reg         cl [0:3];              // their art is in the cache
-reg  [2:0]  tph = 0, tph_1 = 0, tph_2 = 0;
-reg  [3:0]  cand = 0, cand_1 = 0, cand_2 = 0;    // prefetch candidate number
+reg  [4:0]  tph = 0, tph_1 = 0, tph_2 = 0;       // 32 phases: 4 visible covers, then candidates
+reg  [4:0]  cand = 0, cand_1 = 0, cand_2 = 0;    // prefetch candidate number
 reg  [10:0] tg_1 = 0, tg_2 = 0;    // game whose tag is being read
 reg         need_v = 0; reg [10:0] need_g = 0;   // the highest priority missing cover
 reg         sweep_hit = 0; reg [10:0] sweep_g = 0;
@@ -436,34 +455,49 @@ function signed [4:0] cand_off(input [3:0] c, input dir_left);
 endfunction
 reg last_left = 0;                 // direction of the last step, for prefetch
 // the candidates' games (idx + offset, wrapped around the library), recomputed one at a time whenever the selection,
-// the direction or the count changes: one add, then one wrap per cycle until in range (several for tiny libraries)
-reg  [10:0] cgame [0:10];
-reg  [3:0]  cj = 0; reg cph = 0; reg signed [12:0] cgv = 0;
-reg  [10:0] c_idx = 11'h7FF, c_cnt = 0, c_lo = 0; reg c_left = 0;
+// the direction or the count changes: one add, then one wrap per cycle until in range (several for tiny libraries).
+// In the grid view the candidates are the lattice's cells instead: its three rows (0..11, which are also what the
+// lattice draws), then the row below (12..15), then the row above (16..19); positions past the list are not valid.
+reg  [10:0] cgame [0:19]; reg cok [0:19];
+reg  [4:0]  cj = 0; reg cph = 0; reg signed [12:0] cgv = 0;
+reg  [10:0] c_idx = 11'h7FF, c_cnt = 0, c_lo = 0; reg c_left = 0; reg signed [9:0] c_gb = 0; reg c_grid = 0;
 reg         c_valid = 0;           // every candidate matches the current selection (one full pass since the change)
+wire        use_grid = grid_draw && !cart_view;   // the grid's layout and candidates (the cart view is the flow's)
+wire [4:0]  nc = use_grid ? 5'd20 : 5'd11;        // candidates in use
 always @(posedge clk_74a) begin
-    if (idx != c_idx || rcount != c_cnt || last_left != c_left || rlo != c_lo) begin
-        c_idx <= idx; c_cnt <= rcount; c_left <= last_left; c_lo <= rlo; cj <= 0; cph <= 0; c_valid <= 0;
+    if (idx != c_idx || rcount != c_cnt || last_left != c_left || rlo != c_lo || g_base != c_gb || use_grid != c_grid) begin
+        c_idx <= idx; c_cnt <= rcount; c_left <= last_left; c_lo <= rlo; c_gb <= g_base; c_grid <= use_grid; cj <= 0; cph <= 0; c_valid <= 0;
     end else if (rcount != 0) begin
-        if (!cph) begin cgv <= $signed({2'b0, idx}) + cand_off(cj, last_left); cph <= 1; end
+        if (use_grid) begin : gridc
+            reg signed [11:0] grow; reg signed [12:0] gpos;
+            grow = $signed({{2{g_base[9]}}, g_base}) + ((cj < 5'd12) ? $signed({10'd0, cj[3:2]}) : (cj < 5'd16) ? 12'sd3 : -12'sd1);
+            gpos = $signed({2'b0, rlo}) + (grow <<< 2) + $signed({11'd0, cj[1:0]});
+            cgame[cj] <= vmap(gpos[10:0]); cok[cj] <= grow >= 0 && gpos <= $signed({2'b0, rhi});
+            cj <= (cj == 5'd19) ? 5'd0 : cj + 1'b1;
+            if (cj == 5'd19) c_valid <= 1;
+        end
+        else if (!cph) begin cgv <= $signed({2'b0, idx}) + cand_off(cj[3:0], last_left); cph <= 1; end
         else if (cgv < $signed({2'b0, rlo})) cgv <= cgv + $signed({2'b0, rcount});
         else if (cgv >= $signed({2'b0, rlo}) + $signed({2'b0, rcount})) cgv <= cgv - $signed({2'b0, rcount});
         else begin
-            cgame[cj] <= vmap(cgv[10:0]); cph <= 0;
-            cj <= (cj == 4'd10) ? 4'd0 : cj + 1'b1;
-            if (cj == 4'd10) c_valid <= 1;
+            cgame[cj] <= vmap(cgv[10:0]); cok[cj] <= 1; cph <= 0;
+            cj <= (cj == 5'd10) ? 5'd0 : cj + 1'b1;
+            if (cj == 5'd10) c_valid <= 1;
         end
     end
 end
 wire [10:0] tg_now = (tph < 4) ? cg[tph[1:0]] : cgame[cand];
 // a published miss is usable only for the selection it was computed for
-wire        need_ok = need_v && !need_clr && c_valid && idx == c_idx && rcount == c_cnt && last_left == c_left && rlo == c_lo;
+wire        need_ok = need_v && !need_clr && c_valid && idx == c_idx && rcount == c_cnt && last_left == c_left && rlo == c_lo && g_base == c_gb && use_grid == c_grid;
+reg         lat_l [0:19];          // the candidate's art is in the cache (the lattice uses 0..11)
+integer li;
+initial for (li = 0; li < 20; li = li + 1) lat_l[li] = 0;
 always @(posedge clk_74a) begin
     tph <= tph + 1'b1;
     tag_ra <= tg_now[CB-1:0];
     tph_1 <= tph; tg_1 <= tg_now; cand_1 <= cand;
     tph_2 <= tph_1; tg_2 <= tg_1; cand_2 <= cand_1;
-    if (tph >= 4) cand <= (cand == 4'd10) ? 4'd0 : cand + 1'b1;
+    if (tph >= 4) cand <= (cand >= nc - 1'b1) ? 5'd0 : cand + 1'b1;
     // tag_q holds the tag read two cycles ago (address registered, then the RAM's own register)
     if (tph_2 < 4) cl[tph_2[1:0]] <= tag_q[11] && tag_q[10:0] == tg_2;
     else if (count != 0) begin : sweep
@@ -471,9 +505,10 @@ always @(posedge clk_74a) begin
         // the slot's current game may only be evicted by a nearer candidate: if it is itself a candidate of equal or
         // higher priority (or on screen), leave it, so two games that share a slot never take turns evicting each other
         keep = tag_q[11] && (tag_q[10:0] == cg[0] || tag_q[10:0] == cg[1] || tag_q[10:0] == cg[2] || tag_q[10:0] == cg[3]);
-        for (oj = 0; oj < 11; oj = oj + 1)
-            if (oj <= cand_2 && tag_q[11] && tag_q[10:0] == cgame[oj]) keep = 1;
-        miss = !(tag_q[11] && tag_q[10:0] == tg_2) && !keep;
+        for (oj = 0; oj < 20; oj = oj + 1)
+            if (oj < nc && oj <= cand_2 && cok[oj] && tag_q[11] && tag_q[10:0] == cgame[oj]) keep = 1;
+        miss = cok[cand_2] && !(tag_q[11] && tag_q[10:0] == tg_2) && !keep;
+        if (c_valid) lat_l[cand_2] <= cok[cand_2] && tag_q[11] && tag_q[10:0] == tg_2;
         if (cand_2 == 0) begin                       // candidate 0 closes the last sweep and opens the next
             if (!sweep_bad) begin need_v <= sweep_hit; need_g <= sweep_g; end
             sweep_bad <= 0;
@@ -534,6 +569,10 @@ endfunction
 reg  [10:0] gn_src = 11'h7FF, gn_sh = 0; reg [15:0] gacc = 0, gbcd = 0; reg [3:0] gn_i = 0;
 wire [10:0] gn = lcnt - fav_count;
 wire [2:0]  gnd = (gbcd[15:12] != 0) ? 3'd4 : (gbcd[11:8] != 0) ? 3'd3 : (gbcd[7:4] != 0) ? 3'd2 : 3'd1;
+// the platform line's character k, registered: the layout reaches S_MAP_CHAR a cycle after k changes (a long mux
+// from the game count's digits otherwise lands on the layout's state)
+reg [7:0] pch = 0;
+always @(posedge clk_74a) pch <= plat_char(pmode, ecode, enum_, lbl_sec, gm_sel, cur_fav, gbcd, gnd, k);
 always @(posedge clk_74a) begin
     if (gn_i == 0) begin
         if (gn != gn_src) begin gn_src <= gn; gn_sh <= gn; gacc <= 0; gn_i <= 4'd11; end
@@ -564,6 +603,7 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
     target_dataslot_write    <= 0;
     vt_go                    <= 0;
+    g_go                     <= 0;
     picker_reset             <= 0;
     param_we                 <= 0;
     map_we                   <= 0;
@@ -578,6 +618,10 @@ always @(posedge clk_74a) begin
     if (press_dn) pend_d <= 1;
     if (press_x) pend_x <= 1;
     if (press_sel) pend_s <= 1;
+    if (press_y) pend_y <= 1;
+    if (press_b) pend_b <= 1;
+    if (press_l) pend_jl <= 1;
+    if (press_r) pend_jr <= 1;
     cpd_s <= {cpd_s[1:0], cprobe_done};
 
     // idle time with the menu up and no buttons held (the live cart check leaves S_MENU every second: keep counting)
@@ -740,7 +784,7 @@ always @(posedge clk_74a) begin
             end
             default: begin gm_on <= 0; state <= S_GMA; end
             endcase
-        end else if (press_b || pend_x) begin pend_x <= 0; gm_on <= 0; state <= S_GMA; end
+        end else if (press_b || pend_x) begin pend_x <= 0; pend_b <= 0; gm_on <= 0; state <= S_GMA; end
         if (pend_u || pend_d || pend_s) begin pend_u <= 0; pend_d <= 0; pend_s <= 0; end
     end
     S_GMF: begin cur_susp <= 0; gm_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end   // emptied: boot fresh
@@ -877,6 +921,7 @@ always @(posedge clk_74a) begin
         if ((jhave || jwhave) && sec_start[jhave ? jbest : jwrap] != idx) begin
             idx <= sec_start[jhave ? jbest : jwrap]; lbl_sec <= jhave ? jbest : jwrap; lbl_on <= 1;
             last_left <= jup; lerr <= 0; tl_target <= 0; state <= S_FADE;
+            if (grid) begin g_go <= 1; g_kind <= 0; end
         end else state <= S_MENU;
     end
 
@@ -957,7 +1002,7 @@ always @(posedge clk_74a) begin
     S_MAP_WAIT:  state <= S_MAP_WAIT2;
     S_MAP_WAIT2: state <= S_MAP_CHAR;
     S_MAP_CHAR: begin
-        ch = line2 ? plat_char(pmode, ecode, enum_, lbl_sec, gm_sel, cur_fav, gbcd, gnd, k) : vsel ? (cart_bad ? bad_char(k) : hdr_char(cart_hdr, k)) :
+        ch = line2 ? pch : vsel ? (cart_bad ? bad_char(k) : hdr_char(cart_hdr, k)) :
              vtile ? tile_char(k) :
              (k[0] ? ent_q[15:8] : ent_q[7:0]);
         gw = lf ? wrom2[ch[6:0]] : wrom[ch[6:0]];
@@ -983,7 +1028,7 @@ always @(posedge clk_74a) begin
         else begin
             title_w <= (mp[7:0] == 0) ? 8'd0 : mp[7:0] - 1'b1;   // drop the trailing gap
             if (!menu_active) lflush_req <= 1;          // fresh menu (boot or Home): write the log once it is idle
-            if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_s <= 0; end   // presses from before the menu showed
+            if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_s <= 0; pend_y <= 0; pend_b <= 0; pend_jl <= 0; pend_jr <= 0; end   // presses from before the menu showed
             gen <= ~gen; menu_active <= 1; level_target <= 4'd8; state <= gm_on ? S_GM : S_MENU;
             tl_target <= vt_txt ? 4'd0 : 4'd8; tl_hold <= vt_txt;   // after a cartridge transition lands
         end
@@ -995,19 +1040,37 @@ always @(posedge clk_74a) begin
         if (vt_busy) begin                           // a cartridge transition: only fetch covers (presses wait)
             if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
         end else if (cart_view) begin
-            pend_u <= 0; pend_d <= 0; pend_x <= 0;
+            pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_y <= 0; pend_b <= 0; pend_jl <= 0; pend_jr <= 0;
             if (pend_a) begin pend_a <= 0; state <= S_CRUN0; end
             else if (pend_l || pend_r || (pend_s && !cart_play)) begin   // to the list (Select: the ring goes on to All)
                 pend_l <= 0; pend_r <= 0; pend_s <= 0; cart_view <= 0; fav_mode <= lmode; idx <= (lidx < lcnt) ? lidx : 11'd0;
                 lbl_on <= 1; lbl_sec <= 5'd28; lerr <= 0; tl_target <= 0; vt_go <= 1; vt_in <= 0; vt_fx <= 0; state <= S_FADE;
+                if (grid) begin g_go <= 1; g_kind <= 0; end
             end
             else if (lflush_req && mt >= 28'd222_000_000) begin
                 lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
             end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
             else if (rp_tmr >= 28'd74_000_000) begin rp_tmr <= 0; rp <= 1; state <= S_CP0; end
-        end else if (!anim && pend_r && lcnt > 1) begin
+        end else if (g_anim) begin                   // the grid is moving: presses wait (covers still arrive)
+            if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
+        end else if (!anim && pend_y && !vt_busy && lcnt != 0) begin          // Y: grid on / off
+            pend_y <= 0; pend_b <= 0; g_go <= 1; g_kind <= grid_pref ? 2'd2 : 2'd1; grid_pref <= ~grid_pref;
+        end else if (grid && pend_b) begin                                     // B: back to the cover flow
+            pend_b <= 0; g_go <= 1; g_kind <= 2'd2; grid_pref <= 0;
+        end else if (grid && (pend_r || pend_l) && lcnt > 1) begin            // grid: next / previous cell, wrapping rows
+            pend_r <= 0; pend_l <= 0; idx <= pend_r ? next : prev; last_left <= !pend_r; lerr <= 0; lbl_on <= 0; tl_target <= 0;
+            g_go <= 1; g_kind <= 0; state <= S_FADE;
+        end else if (grid && (pend_u || pend_d)) begin : grid_ud            // grid: a row up / down, stopping at the ends
+            reg [10:0] gp, gt; reg ok;
+            gp = idx - rlo; ok = 0; gt = idx;
+            if (pend_d && gp + 11'd4 < rcount) begin gt = idx + 11'd4; ok = 1; end
+            else if (pend_d && (gp | 11'd3) + 11'd1 < rcount) begin gt = rhi; ok = 1; end   // a shorter last row
+            else if (pend_u && gp >= 11'd4) begin gt = idx - 11'd4; ok = 1; end
+            pend_u <= 0; pend_d <= 0;
+            if (ok) begin idx <= gt; last_left <= pend_u; lerr <= 0; lbl_on <= 0; tl_target <= 0; g_go <= 1; g_kind <= 0; state <= S_FADE; end
+        end else if (!grid && !anim && pend_r && lcnt > 1) begin
             pend_r <= 0; idx <= next; last_left <= 0; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 0; tl_target <= 0; state <= S_FADE;
-        end else if (!anim && pend_l && lcnt > 1) begin
+        end else if (!grid && !anim && pend_l && lcnt > 1) begin
             pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
         end else if (!anim && pend_x && pver >= 16'd7 && cur_known) begin
             pend_x <= 0; gm_on <= 1; gm_sel <= 0; lbl_on <= 0; state <= S_GMA;
@@ -1015,16 +1078,19 @@ always @(posedge clk_74a) begin
             pend_s <= 0; lerr <= 0; tl_target <= 0; state <= S_FADE;
             if (!fav_mode && fav_count != 0 && idx_ok) begin           // All -> Favorites
                 fav_mode <= 1; lbl_on <= 1; lbl_sec <= 5'd0; aidx <= idx; idx <= fidx;
+                if (grid) begin g_go <= 1; g_kind <= 0; end
             end else if (cart_found) begin                             // -> Cartridge
                 fav_mode <= 0; lbl_on <= 0; cart_view <= 1; lidx <= idx; lmode <= fav_mode; idx <= cart_idx;
                 vt_go <= 1; vt_in <= 1; vt_fx <= 0;
             end else begin                                             // Favorites -> All
                 fav_mode <= 0; lbl_on <= 1; lbl_sec <= 5'd28; fidx <= vtile ? 11'd0 : idx; idx <= aidx;
+                if (grid) begin g_go <= 1; g_kind <= 0; end
             end
-        end else if (!anim && (pend_u || pend_d) && idx_ok && !fav_mode && lcnt > 1) begin
-            jup <= pend_u; pend_u <= 0; pend_d <= 0; state <= S_JMP0;
+        end else if (!anim && (pend_u || pend_d || pend_jl || pend_jr) && idx_ok && !fav_mode && lcnt > 1) begin
+            jup <= pend_u | pend_jl; pend_u <= 0; pend_d <= 0; pend_jl <= 0; pend_jr <= 0; state <= S_JMP0;
         end else if (pend_a && vtile) begin                           // All games: to the A to Z list
             pend_a <= 0; fidx <= 11'd0; fav_mode <= 0; idx <= aidx; lbl_on <= 1; lbl_sec <= 5'd28; lerr <= 0; tl_target <= 0;
+            if (grid) begin g_go <= 1; g_kind <= 0; end
             state <= S_FADE;
         end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; lbl_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
         else if (lflush_req && mt >= 28'd222_000_000) begin   // 3 s idle: write the debug log to its file
@@ -1033,7 +1099,10 @@ always @(posedge clk_74a) begin
         else if (rp_tmr >= 28'd74_000_000 && !anim && !pend_l && !pend_r && !pend_a && !pend_x && !pend_s) begin
             rp_tmr <= 0; rp <= 1; state <= S_CP0;                              // live cart check (read only)
         end
-        if (lcnt <= 1 || !idx_ok || fav_mode) begin pend_u <= 0; pend_d <= 0; end
+        if ((lcnt <= 1 || !idx_ok || fav_mode) && !grid) begin pend_u <= 0; pend_d <= 0; end
+        if (lcnt <= 1 || !idx_ok || fav_mode) begin pend_jl <= 0; pend_jr <= 0; end
+        if (!grid) pend_b <= 0;
+        if (lcnt == 0 || vt_busy) pend_y <= 0;
         if ((fav_count == 0 || !idx_ok) && !cart_found) pend_s <= 0;
         if (pver < 16'd7) pend_x <= 0;
         if (lcnt <= 1) begin pend_l <= 0; pend_r <= 0; end
@@ -1300,6 +1369,99 @@ always @(posedge clk_74a) begin
     glow_out <= glow * level;                                      // dims with the menu
 end
 
+// ---------------------------------------------------------------- grid view (clk_74a)
+// Cells are 72 px on a 76 by 94 pitch: columns at x = 10, 86, 162, 238, rows at y = 8 and 102 (a third row at 196
+// only exists while a scroll brings it in; the lattice is cut at row 192, where the title block starts). The
+// selection is the "pop": free cover 1 drawn 80 px at its cell less 4, over the lattice, whose cell under it is
+// skipped. Y morphs the flow into the grid over 12 frames (the centre cover shrinks into its cell while the side
+// covers go, then the lattice comes in) and back. A move slides the pop to its new cell over 6 frames; when the
+// cell is past the window the rows slide one pitch over 8 frames and the new row enters under the clip line.
+// Curves: tools/grid_model.py (its preview draws the frames the way the video section below does).
+// ---- generated by tools/grid_model.py tables: do not edit by hand
+localparam [3:0] GN_MOVE = 6, GN_SCROLL = 8, GN_MORPH = 12;
+function [8:0] grid_move(input [2:0] i);
+    case (i) 0: grid_move = 108; 1: grid_move = 180; 2: grid_move = 224; 3: grid_move = 247; 4: grid_move = 255; 5: grid_move = 256; default: grid_move = 256; endcase
+endfunction
+function [6:0] grid_scroll(input [2:0] i);
+    case (i) 0: grid_scroll = 31; 1: grid_scroll = 54; 2: grid_scroll = 71; 3: grid_scroll = 82; 4: grid_scroll = 89; 5: grid_scroll = 93; 6: grid_scroll = 94; 7: grid_scroll = 94; default: grid_scroll = 94; endcase
+endfunction
+function [8:0] grid_morph(input [3:0] i);
+    case (i) 0: grid_morph = 59; 1: grid_morph = 108; 2: grid_morph = 148; 3: grid_morph = 180; 4: grid_morph = 205; 5: grid_morph = 224; 6: grid_morph = 237; 7: grid_morph = 247; 8: grid_morph = 252; 9: grid_morph = 255; 10: grid_morph = 256; 11: grid_morph = 256; default: grid_morph = 256; endcase
+endfunction
+function [4:0] grid_sideb(input [3:0] i);
+    case (i) 0: grid_sideb = 7; 1: grid_sideb = 5; 2: grid_sideb = 3; 3: grid_sideb = 0; 4: grid_sideb = 0; 5: grid_sideb = 0; 6: grid_sideb = 0; 7: grid_sideb = 0; 8: grid_sideb = 0; 9: grid_sideb = 0; 10: grid_sideb = 0; 11: grid_sideb = 0; default: grid_sideb = 0; endcase
+endfunction
+function [4:0] grid_latb(input [3:0] i);
+    case (i) 0: grid_latb = 0; 1: grid_latb = 0; 2: grid_latb = 0; 3: grid_latb = 0; 4: grid_latb = 1; 5: grid_latb = 2; 6: grid_latb = 3; 7: grid_latb = 4; 8: grid_latb = 5; 9: grid_latb = 6; 10: grid_latb = 7; 11: grid_latb = 9; default: grid_latb = 9; endcase
+endfunction
+// ---- end of generated tables
+localparam signed [10:0] GPX = 11'sd76, GPY = 11'sd94;
+wire [10:0] g_pos = idx - rlo;                         // the selection's place in the list being browsed
+wire [1:0]  g_col = g_pos[1:0]; wire [8:0] g_row = g_pos[10:2];
+wire signed [10:0] g_vr = $signed({2'b0, g_row}) - $signed({2'b0, g_top});   // its lattice row from the top one
+wire signed [10:0] g_cx = 11'sd6 + GPX * $signed({9'd0, g_col});             // the pop's x at that cell
+wire signed [10:0] lat_vy = vt_busy ? (vt_dir ? ul : D - ul) : (cart_view ? D : 11'sd0);   // pushed out by a cartridge
+reg  signed [9:0]  lat_sbase = 0;                      // list row of lattice row 0 as the cells were last snapped
+reg  [10:0] lat_g [0:11]; reg lat_v [0:11];           // the cells: game, in the list
+reg  signed [10:0] lat_y0 = 0;                         // top of lattice row 0 on screen
+reg  [3:0]  lat_skip = 4'd15;                          // the cell under the pop at rest (15: none)
+reg         lat_on = 0;
+integer gl;
+initial for (gl = 0; gl < 12; gl = gl + 1) begin lat_g[gl] = 0; lat_v[gl] = 0; end
+function signed [10:0] glerp(input signed [10:0] a, input signed [10:0] b, input [8:0] k);
+    reg signed [21:0] d;
+    begin d = (b - a) * $signed({1'b0, k}); glerp = a + d[18:8]; end
+endfunction
+always @(posedge clk_74a) begin
+    g_go1 <= g_go; g_go2 <= g_go1;                     // two cycles: rlo and rcount follow a mode change
+    if (g_go2) begin
+        if (g_kind == 2'd1) begin                      // morph in: the selection's row becomes the top row
+            g_top <= g_row; g_up <= 0; lat_y <= 0; g_morph <= 1; g_min <= 1; g_mf <= 0; side_b <= 5'd9; lat_b <= 0;
+            p_fx <= 11'sd96; p_fy <= 11'sd32; p_fs <= 8'd128; p_tx <= g_cx; p_ty <= 11'sd4; p_ts <= 8'd80;
+            p_x <= 11'sd96; p_y <= 11'sd32; p_s <= 8'd128; g_move <= 0; g_scroll <= 0;
+        end else if (g_kind == 2'd2) begin             // morph out, from wherever the pop rests
+            g_morph <= 1; g_min <= 0; g_mf <= 0; side_b <= 0; lat_b <= 5'd9;
+            p_fx <= 11'sd96; p_fy <= 11'sd32; p_fs <= 8'd128; p_tx <= p_x; p_ty <= p_y; p_ts <= p_s; g_move <= 0; g_scroll <= 0;
+        end else if (grid_draw) begin                  // the selection moved
+            p_fx <= p_x; p_fy <= p_y; p_fs <= p_s; p_tx <= g_cx; p_ts <= 8'd80; g_vf <= 0;
+            if (g_vr >= 0 && g_vr <= 1) begin p_ty <= 11'sd4 + GPY * g_vr; g_move <= 1; end
+            else if (g_vr == 2) begin p_ty <= 11'sd4 + GPY; g_move <= 1; g_scroll <= 1; g_sdn <= 1; g_sf <= 0; g_up <= 0; lat_y <= 0; end
+            else if (g_vr == -1) begin p_ty <= 11'sd4; g_move <= 1; g_scroll <= 1; g_sdn <= 0; g_sf <= 0; g_up <= 1; lat_y <= 0; end
+            else begin g_top <= g_row; g_up <= 0; lat_y <= 0; p_x <= g_cx; p_y <= 11'sd4; p_s <= 8'd80; end   // far: no motion
+        end
+    end else if (frame_tick) begin
+        if (g_scroll) begin
+            lat_y <= g_sdn ? -$signed({4'd0, grid_scroll(g_sf)}) : $signed({4'd0, grid_scroll(g_sf)});
+            if (g_sf == GN_SCROLL - 1) begin g_scroll <= 0; lat_y <= 0; g_up <= 0; g_top <= g_sdn ? g_top + 1'b1 : g_top - 1'b1; end
+            else g_sf <= g_sf + 1'b1;
+        end
+        if (g_move) begin : mv
+            reg [8:0] k;
+            k = grid_move(g_vf);
+            p_x <= glerp(p_fx, p_tx, k); p_y <= glerp(p_fy, p_ty, k); p_s <= glerp({3'b0, p_fs}, {3'b0, p_ts}, k);
+            if (g_vf == GN_MOVE - 1) g_move <= 0; else g_vf <= g_vf + 1'b1;
+        end
+        if (g_morph) begin : mo
+            reg [8:0] k; reg [3:0] fo;
+            k = g_min ? grid_morph(g_mf) : 9'd256 - grid_morph(g_mf);
+            fo = g_min ? g_mf : 4'd11 - g_mf;
+            p_x <= glerp(p_fx, p_tx, k); p_y <= glerp(p_fy, p_ty, k); p_s <= glerp({3'b0, p_fs}, {3'b0, p_ts}, k);
+            side_b <= grid_sideb(fo); lat_b <= grid_latb(fo);
+            if (g_mf == GN_MORPH - 1) begin g_morph <= 0; grid <= g_min; end else g_mf <= g_mf + 1'b1;
+        end
+    end
+    // the lattice as drawn: a snapshot of the candidates whenever they are complete, and its row 0 top (continuous
+    // through a scroll: expressed from the snapped base row, so a stale snapshot still lands where it was)
+    if (c_valid && use_grid) begin
+        for (gl = 0; gl < 12; gl = gl + 1) begin lat_g[gl] <= cgame[gl]; lat_v[gl] <= cok[gl]; end
+        lat_sbase <= g_base;
+    end
+    lat_y0 <= 11'sd8 + GPY * ($signed({lat_sbase[9], lat_sbase}) - $signed({2'b0, g_top})) + $signed({{3{lat_y[7]}}, lat_y}) + lat_vy;
+    lat_on <= grid_draw && lat_b != 0;
+    lat_skip <= (!g_move && !g_scroll && $signed({2'b0, g_row}) >= $signed({lat_sbase[9], lat_sbase}) && $signed({2'b0, g_row}) < $signed({lat_sbase[9], lat_sbase}) + 11'sd3)
+                ? {g_row[1:0] - lat_sbase[1:0], g_col} : 4'd15;
+end
+
 // two stages: the cover flow math into n*, then the cartridge transition's choice into c* (cx is on a long path)
 reg  signed [10:0] nxr [0:3]; reg [7:0] nsr [0:3]; reg [4:0] nbr [0:3]; reg [10:0] ngr [0:3]; reg nvr [0:3];
 integer ki;
@@ -1329,6 +1491,14 @@ always @(posedge clk_74a) begin   // registered: these cross into clk_vid
         if (vt_busy && (ki == 3 || (vt_dir && ki != 1))) begin      // leaving: from the snapshot
             cx[ki] <= gx[ki]; cs[ki] <= gs[ki]; cb[ki] <= gb[ki]; cg[ki] <= gg[ki]; cv[ki] <= gv[ki]; ck[ki] <= gk[ki];
             cy[ki] <= (ki == 3) ? (vt_dir ? um : -um) : ul;
+        end else if (use_grid) begin                                // the grid: the pop and, in a morph, the side covers
+            case (ki)
+            0: begin cx[0] <= 11'sd12; cs[0] <= 8'd80; cb[0] <= side_b; cg[0] <= vmap(prev); cv[0] <= side_b != 0 && rcount > 1; ck[0] <= 0; cy[0] <= vt_busy ? D - ul : 11'sd0; end
+            2: begin cx[2] <= 11'sd228; cs[2] <= 8'd80; cb[2] <= side_b; cg[2] <= vmap(next); cv[2] <= side_b != 0 && rcount > 1; ck[2] <= 0; cy[2] <= vt_busy ? D - ul : 11'sd0; end
+            1: begin cx[1] <= p_x; cs[1] <= p_s; cb[1] <= 5'd16; cg[1] <= vmap(idx); cv[1] <= 1; ck[1] <= 0;
+                     cy[1] <= p_y - 11'sd96 + $signed({4'b0, p_s[7:1]}) + (vt_busy ? D - um : 11'sd0); end
+            default: begin cv[3] <= 0; cx[3] <= nxr[3]; cs[3] <= nsr[3]; cb[3] <= nbr[3]; cg[3] <= ngr[3]; ck[3] <= 0; cy[3] <= 0; end
+            endcase
         end else begin                                              // the live selection
             cx[ki] <= nxr[ki]; cs[ki] <= nsr[ki]; cb[ki] <= nbr[ki]; cg[ki] <= ngr[ki]; cv[ki] <= nvr[ki]; ck[ki] <= (ki == 1) && vsel;
             cy[ki] <= !vt_busy ? 11'sd0 : (ki == 1) ? (vt_dir ? um - D : D - um) : D - ul;
@@ -1488,14 +1658,20 @@ always @(posedge clk_vid) vs_any <= menu_v ? (vc < 9'd2) : vs;
 reg signed [10:0] vx [0:3]; reg [7:0] vs_ [0:3]; reg [4:0] vb [0:3]; reg [CB-1:0] vg [0:3]; reg vv [0:3], vl [0:3];
 reg signed [10:0] vy [0:3]; reg vkey [0:3];
 reg [7:0] glow_v = 0; reg [15:0] acc_v = 0; reg [4:0] rf_v = 5'd31, gf_v = 5'd31;
+// the lattice for this frame
+reg lv_on = 0; reg signed [10:0] lv_y0 = 0; reg [4:0] lv_b = 0; reg [3:0] lv_skip = 4'd15;
+reg [CB-1:0] lv_g [0:11]; reg lv_v [0:11], lv_l [0:11];
 integer vk;
 always @(posedge clk_vid) if (vc == 9'd3 && hc == 0) begin
     for (vk = 0; vk < 4; vk = vk + 1) begin
         vx[vk] <= cx[vk]; vs_[vk] <= cs[vk]; vb[vk] <= cb[vk]; vg[vk] <= cg[vk][CB-1:0]; vv[vk] <= cv[vk]; vl[vk] <= cl[vk];
         vy[vk] <= cy[vk]; vkey[vk] <= ck[vk];
     end
+    for (vk = 0; vk < 12; vk = vk + 1) begin lv_g[vk] <= lat_g[vk][CB-1:0]; lv_v[vk] <= lat_v[vk]; lv_l[vk] <= lat_l[vk]; end
+    lv_on <= lat_on; lv_y0 <= lat_y0; lv_b <= lat_b; lv_skip <= lat_skip;
     glow_v <= glow_out[10:3]; acc_v <= glow_acc; rf_v <= rf; gf_v <= gf;
 end
+localparam [8:0] LAT_W = 9'd72, LAT_H = 9'd87, LAT_CLIP = 9'd192;
 // this frame's ring and shine
 wire [16:0] rg_r2 = ring_r2(rf_v); wire [11:0] rg_b = (rf_v == 5'd31) ? 12'd0 : ring_b(rf_v); wire [14:0] rg_m = ring_m(rf_v);
 wire signed [10:0] gl_p = glint_p(gf_v); wire gl_on = gf_v != 5'd31;
@@ -1506,11 +1682,20 @@ always @(posedge clk_vid) if (hc == 0) begin
     if (vc >= VOFF - 1 && vc < VOFF + HR_H - 1) begin lreq_y <= vc - (VOFF - 1); lreq_t <= ~lreq_t; end
 end
 
-// ---- stage 0: which cover owns this pixel
+// ---- stage 0: which cover owns this pixel: a free cover, else a lattice cell
+wire [8:0]  l_cx0 = x - 9'd10;
+wire [1:0]  l_c   = (l_cx0 >= 9'd228) ? 2'd3 : (l_cx0 >= 9'd152) ? 2'd2 : (l_cx0 >= 9'd76) ? 2'd1 : 2'd0;
+wire [8:0]  l_lx  = l_cx0 - ((l_c == 2'd3) ? 9'd228 : (l_c == 2'd2) ? 9'd152 : (l_c == 2'd1) ? 9'd76 : 9'd0);
+wire signed [10:0] l_ry0 = $signed({2'b0, y}) - lv_y0;
+wire [1:0]  l_r   = (l_ry0 >= 11'sd188) ? 2'd2 : (l_ry0 >= 11'sd94) ? 2'd1 : 2'd0;
+wire signed [10:0] l_ly = l_ry0 - ((l_r == 2'd2) ? 11'sd188 : (l_r == 2'd1) ? 11'sd94 : 11'sd0);
+wire [3:0]  l_cell = {l_r, l_c};
+wire        l_hit = lv_on && x >= 9'd10 && x < 9'd314 && l_lx < LAT_W && y < LAT_CLIP && l_ry0 >= 0 && l_ly < $signed({2'b0, LAT_H})
+                    && lv_v[l_cell] && l_cell != lv_skip;
 reg        hk_any; reg [1:0] hk; reg [7:0] hlx, hly, hS; reg [7:0] hR; reg [4:0] hB; reg hKey;
 integer hi;
 always @(*) begin
-    hk_any = 0; hk = 0; hlx = 0; hly = 0; hS = 0; hR = 0; hB = 0; hKey = 0;
+    hk_any = l_hit; hk = 0; hlx = l_lx[7:0]; hly = l_ly[7:0]; hS = 8'd72; hR = 8'd15; hB = lv_b; hKey = 0;
     for (hi = 3; hi >= 0; hi = hi - 1) begin : own
         reg signed [11:0] lx, ly; reg [7:0] r;
         lx = $signed({3'b0, x}) - vx[hi];
@@ -1699,7 +1884,14 @@ always @(posedge clk_sys) begin lq_s <= {lq_s[1:0], lreq_t}; ce_d <= {ce_d[0], s
 wire tick = ce_d[1];
 // frame parameters for the fetcher, latched when line 0 is requested
 reg signed [10:0] fx [0:3]; reg [7:0] fs_ [0:3]; reg [CB-1:0] fg [0:3]; reg fv [0:3], fl [0:3]; reg signed [10:0] fyo [0:3];
-reg [1:0]  fk = 0;          // cover being fetched
+reg lf_on = 0; reg signed [10:0] lf_y0 = 0; reg [3:0] lf_skip = 4'd15; reg [CB-1:0] lf_g [0:11]; reg lf_v [0:11], lf_l [0:11];
+reg [2:0]  fk = 0;          // segment being fetched: 0..3 the lattice row's cells, 4..7 the free covers
+reg        fcl = 0;         // its art is in the cache
+// the lattice row this line crosses (at most one: rows are 94 apart, a row band is 87 tall)
+wire signed [10:0] f_ry0 = $signed({2'b0, fy}) - lf_y0;
+wire [1:0]  f_r  = (f_ry0 >= 11'sd188) ? 2'd2 : (f_ry0 >= 11'sd94) ? 2'd1 : 2'd0;
+wire signed [10:0] f_ly = f_ry0 - ((f_r == 2'd2) ? 11'sd188 : (f_r == 2'd1) ? 11'sd94 : 11'sd0);
+wire        f_row_ok = lf_on && fy < LAT_CLIP && f_ry0 >= 0 && f_ly < $signed({2'b0, LAT_H});
 reg [2:0]  fst = 0;         // 0 idle, 1 setup, 2 setup2, 3 run, 4 drain
 reg [8:0]  fxc = 0, fxe = 0;  // current / end screen x
 reg [17:0] facc = 0;        // source x, 8.8 fixed point (+ guard)
@@ -1712,23 +1904,41 @@ always @(posedge clk_sys) begin
     if (tick) sd_we <= 0;                           // a write lasts one SDRAM cycle
     if (lq_s[2] != lq_s[1]) begin
         fy <= lreq_y; fk <= 0; fst <= 3'd1; fpend <= 0; fpend2 <= 0;
-        if (lreq_y == 0) for (fi2 = 0; fi2 < 4; fi2 = fi2 + 1) begin fx[fi2] <= vx[fi2]; fs_[fi2] <= vs_[fi2]; fg[fi2] <= vg[fi2]; fv[fi2] <= vv[fi2]; fl[fi2] <= vl[fi2]; fyo[fi2] <= vy[fi2]; end
+        if (lreq_y == 0) begin
+            for (fi2 = 0; fi2 < 4; fi2 = fi2 + 1) begin fx[fi2] <= vx[fi2]; fs_[fi2] <= vs_[fi2]; fg[fi2] <= vg[fi2]; fv[fi2] <= vv[fi2]; fl[fi2] <= vl[fi2]; fyo[fi2] <= vy[fi2]; end
+            for (fi2 = 0; fi2 < 12; fi2 = fi2 + 1) begin lf_g[fi2] <= lv_g[fi2]; lf_v[fi2] <= lv_v[fi2]; lf_l[fi2] <= lv_l[fi2]; end
+            lf_on <= lv_on; lf_y0 <= lv_y0; lf_skip <= lv_skip;
+        end
     end else case (fst)
-    3'd1: begin : setup
-        reg signed [11:0] ly, xs, xe; reg [7:0] S, r, row; reg [17:0] rowf;
-        S  = fs_[fk]; r = (S * 7) >> 5;
-        ly = $signed({3'b0, fy}) - ($signed(12'sd96) - $signed({5'b0, S[7:1]}) + fyo[fk]);
-        xs = (fx[fk] < 0) ? 12'sd0 : fx[fk];
-        xe = (fx[fk] + $signed({4'b0, S}) > 12'sd320) ? 12'sd320 : fx[fk] + $signed({4'b0, S});
-        if (!fv[fk] || ly < 0 || ly >= $signed({4'b0, S}) + $signed({4'b0, r}) || xs >= xe) begin
-            if (fk == 3) fst <= 3'd4; else fk <= fk + 1'b1;
+    3'd1: if (fk < 4) begin : lsetup                  // a lattice cell of the row this line crosses
+        reg [3:0] lcl; reg [7:0] row; reg [17:0] rowf;
+        lcl = {f_r, fk[1:0]};
+        if (!f_row_ok || !lf_v[lcl] || lcl == lf_skip) fk <= fk + 1'b1;
+        else begin
+            row   = (f_ly < 11'sd72) ? f_ly[7:0] : 8'd143 - f_ly[7:0];   // reflection mirrors
+            fstep <= step_lut[72];
+            rowf  = row * step_lut[72];
+            fbase <= ART_WORD + ({{(24-CB){1'b0}}, lf_g[lcl]} << 15) + 24'd16384 + rowf[15:8] * 24'd80;
+            facc  <= 0; fcl <= lf_l[lcl];
+            fxc <= 9'd10 + {fk[1:0], 2'b0} * 9'd19; fxe <= 9'd82 + {fk[1:0], 2'b0} * 9'd19;   // 10 + 76 k .. + 72
+            fst <= 3'd3;
+        end
+    end else begin : setup
+        reg signed [11:0] ly, xs, xe; reg [7:0] S, r, row; reg [17:0] rowf; reg [1:0] c;
+        c  = fk[1:0];
+        S  = fs_[c]; r = (S * 7) >> 5;
+        ly = $signed({3'b0, fy}) - ($signed(12'sd96) - $signed({5'b0, S[7:1]}) + fyo[c]);
+        xs = (fx[c] < 0) ? 12'sd0 : fx[c];
+        xe = (fx[c] + $signed({4'b0, S}) > 12'sd320) ? 12'sd320 : fx[c] + $signed({4'b0, S});
+        if (!fv[c] || ly < 0 || ly >= $signed({4'b0, S}) + $signed({4'b0, r}) || xs >= xe) begin
+            if (fk == 7) fst <= 3'd4; else fk <= fk + 1'b1;
         end else begin
             row   = (ly < $signed({4'b0, S})) ? ly[7:0] : S - 1'b1 - (ly[7:0] - S);   // reflection mirrors
             fstep <= step_lut[S];
             rowf  = row * step_lut[S];
-            fbase <= ART_WORD + ({{(24-CB){1'b0}}, fg[fk]} << 15) + ((S <= 80) ? 24'd16384 + rowf[15:8] * 24'd80 : {9'd0, rowf[15:8], 7'd0});
-            facc  <= (xs - fx[fk]) * step_lut[S];
-            fxc <= xs[8:0]; fxe <= xe[8:0];
+            fbase <= ART_WORD + ({{(24-CB){1'b0}}, fg[c]} << 15) + ((S <= 80) ? 24'd16384 + rowf[15:8] * 24'd80 : {9'd0, rowf[15:8], 7'd0});
+            facc  <= (xs - fx[c]) * step_lut[S];
+            fxc <= xs[8:0]; fxe <= xe[8:0]; fcl <= fl[c];
             fst <= 3'd3;
         end
     end
@@ -1736,7 +1946,7 @@ always @(posedge clk_sys) begin
         // the address set at tick t is sampled at the next SDRAM sync and its data is captured at tick t + 2
         if (fpend2) begin lb_we <= 1; lb_wa <= {fy[0], fpx2}; lb_wd <= sd_q; end
         fpend2 <= fpend; fpx2 <= fpx;
-        if (fxc < fxe && fl[fk]) begin
+        if (fxc < fxe && fcl) begin
             sd_addr <= fbase + facc[17:8]; sd_oe <= 1; fpend <= 1; fpx <= fxc;
             fxc <= fxc + 1'b1; facc <= facc + fstep;
         end else begin
@@ -1744,7 +1954,7 @@ always @(posedge clk_sys) begin
             if (fxc < fxe) begin                    // cover not in the cache yet: a flat tile, and the cycle is free
                 lb_we <= 1; lb_wa <= {fy[0], fxc}; lb_wd <= PLACEHOLDER; fxc <= fxc + 1'b1;
             end else if (!fpend && !fpend2) begin   // drained
-                if (fk == 3) fst <= 3'd4; else begin fk <= fk + 1'b1; fst <= 3'd1; end
+                if (fk == 7) fst <= 3'd4; else begin fk <= fk + 1'b1; fst <= 3'd1; end
             end
             if (!ff_empty) begin sd_we <= 1; sd_oe <= 0; sd_addr <= ff_q[39:16]; sd_wd <= ff_q[15:0]; ff_rp <= ff_rp + 1'b1; end
         end

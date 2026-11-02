@@ -17,6 +17,9 @@ def find(name):
 names = ["Kirby's Dream Land", "Kirby's Dream Land 2", "Kirby's Pinball Land", "Dr. Mario", "Donkey Kong Land",
          "Pokemon - Crystal Version", "Pokemon - Gold Version", "Pokemon - Silver Version"]
 FAV = '--fav' in sys.argv
+GRID = '--grid' in sys.argv                   # grid.hex: 14 games (three full rows and a half), no favorites
+if GRID:
+    names = names + ["Donkey Kong Land 2", "Donkey Kong Land III", "Kirby's Star Stacker", "Kirby's Block Ball", "Mario's Picross", "Klax"]
 games = [find(n) for n in names]
 favs = [1, 5, 6] if FAV else []               # positions in names: favorites copied to the top
 order = [(g, True) for g in (games[i] for i in favs)] + [(g, games.index(g) in favs) for g in games]
@@ -74,5 +77,5 @@ for i, (g, fv) in enumerate(order):
     rec = bytes([0x11, 0x22, 0x33, 0x80]) + struct.pack('<I', zlib.crc32(b'PM_CRYSTAL\0') if (g == games[5] and not FAV) else 0x01020304 + i)
     out[fpr + i * 8: fpr + i * 8 + 8] = rec
 for k, d in enumerate(defaults): out[art_off + k * 65536: art_off + k * 65536 + len(d)] = d
-open('fav.hex' if FAV else 'vt.hex', 'w').write('\n'.join(f'{b:02x}' for b in out) + '\n')
-print('fav.hex' if FAV else 'vt.hex', len(out), 'bytes; default art at', art_off, 'FPR2 at', fpr)
+open('fav.hex' if FAV else 'grid.hex' if GRID else 'vt.hex', 'w').write('\n'.join(f'{b:02x}' for b in out) + '\n')
+print('fav.hex' if FAV else 'grid.hex' if GRID else 'vt.hex', len(out), 'bytes; default art at', art_off, 'FPR2 at', fpr)
