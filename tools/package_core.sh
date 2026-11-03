@@ -13,7 +13,7 @@ python3 -I - "$OUT/Cores/maxsorto.GBC/core.json" <<'PY'
 import json, sys, datetime
 p = sys.argv[1]; d = json.load(open(p)); m = d["core"]["metadata"]
 m["author"] = "maxsorto"; m["shortname"] = "GBC"; m["version"] = m.get("version", "1.4.0") + "-cover2"
-m["date_release"] = datetime.date.today().isoformat(); m["url"] = "https://github.com/maxsorto/openfpga-GBC"
+m["date_release"] = datetime.date.today().isoformat(); m["url"] = "https://github.com/maxsorto/openfpga-vitrine"
 m["description"] = (m.get("description", "") + " Cover picker: box-art game menu; press L in game to pause, resume or go home.").strip()
 json.dump(d, open(p, "w"), indent=2); print("core.json:", m["author"], m["version"])
 PY

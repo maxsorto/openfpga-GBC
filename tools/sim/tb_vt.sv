@@ -3,6 +3,7 @@
 // screen and seats (ring, shine, bloom, insert sound). Scenario B (-DSCEN_B): boot with no cart, step right, insert a
 // cart the pack doesn't know: the list is pushed out, the gray default image drops in with the header title, carts.cfg
 // gets the record; then pull it: the list comes back at the same place. Frames go to vt_a/ or vt_b/f_NNN.ppm.
+// -DLONGREST (with -DSCEN_F) only adds rests before presses, for capturing frames for the site.
 `timescale 1ns/1ps
 module tb_vt;
   reg clk = 0; always #6.757 clk = ~clk;          // 74.25 MHz
@@ -202,6 +203,9 @@ module tb_vt;
     cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(4);          // A does nothing here
     if (dut.state != 23 || !dut.cart_none) errs = errs + 1;
     cart_hdr = crystal; probe_now; wait (dut.vt_busy); wait (!dut.vt_busy); frames(4);   // a cart arrives over the slot
+`ifdef LONGREST
+    frames(80);                                                        // capture only: let the ring and glow settle
+`endif
     $display("F: cart arrived: idx %0d (want 5) cart_none %0d view %0d", dut.idx, dut.cart_none, dut.cart_view);
     if (dut.idx != 5 || dut.cart_none || !dut.cart_view) errs = errs + 1;
     cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(20);         // A: play the cart
@@ -215,6 +219,9 @@ module tb_vt;
     if (dut.state != 23 || !dut.menu_active || !dut.cart_view || cart_mode || !hold_gb || dut.idx != 5) errs = errs + 1;
     cont1_key[2] = 1; frames(2); cont1_key[2] = 0; wait (dut.vt_busy); wait (!dut.vt_busy); frames(4);   // Left: the list
     $display("F: list idx %0d view %0d", dut.idx, dut.cart_view); if (dut.cart_view) errs = errs + 1;
+`ifdef LONGREST
+    frames(50);                                                        // capture only: the list at rest before A
+`endif
     cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(3);          // A on a game: the zoom starts with the fade
     $display("F: launch: zm %0d cs1 %0d (want > 128) level %0d state %0d", dut.zm, dut.cs[1], dut.level, dut.state);
     if (!dut.zm || dut.cs[1] <= 128) errs = errs + 1;

@@ -1,255 +1,104 @@
-/* Vitrine site. Plain JS, no dependencies. */
+/* Vitrine site: reveals, the hero's tilt and parallax, the before and after wipe, and videos that play in view. */
 (function () {
-  'use strict';
+  var root = document.documentElement;
+  root.classList.add('js');
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) root.classList.add('reduced');
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function smooth(t) { return t * t * (3 - 2 * t); }
 
-  var doc = document;
-  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (reduced) doc.documentElement.classList.add('reduced');
+  /* Nav background once the page moves. */
+  var nav = document.getElementById('nav');
+  function navState() { nav.classList.toggle('scrolled', window.scrollY > 12); }
 
-  /* Nav border once the page has moved. */
-  var nav = doc.querySelector('.nav');
-  function navState() { nav.classList.toggle('is-scrolled', window.scrollY > 8); }
-  navState();
-
-  /* Hero video: a tall clip on narrow screens, the wide one elsewhere. */
-  var heroVideo = doc.getElementById('hero-video');
-  var heroFrame = heroVideo.parentNode;
-  function setHeroSource() {
-    var portrait = window.innerWidth < 640;
-    var want = portrait ? 'assets/pocket_portrait.mp4' : 'assets/pocket_landscape.mp4';
-    if (heroVideo.getAttribute('data-current') === want) return;
-    heroVideo.setAttribute('data-current', want);
-    heroFrame.classList.toggle('is-portrait', portrait);
-    heroVideo.src = want;
-    heroVideo.load();
-    var p = heroVideo.play();
-    if (p && p.catch) p.catch(function () {});
-  }
-  setHeroSource();
-  var resizeTimer;
-  window.addEventListener('resize', function () {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { setHeroSource(); layoutScrubs(); }, 150);
-  });
-
-  /* Hero parallax: three layers, each at its own rate, only while the stage is near. */
-  var stage = doc.getElementById('hero-stage');
-  var layers = Array.prototype.slice.call(stage.querySelectorAll('.plx')).map(function (el) {
-    return { el: el, rate: parseFloat(el.getAttribute('data-rate')) || 0 };
-  });
-  function parallax() {
-    if (reduced) return;
-    var rect = stage.getBoundingClientRect();
-    if (rect.bottom < -200 || rect.top > window.innerHeight + 200) return;
-    var y = window.scrollY;
-    for (var i = 0; i < layers.length; i++) {
-      var l = layers[i];
-      l.el.style.transform = 'translate3d(0,' + (-y * l.rate).toFixed(1) + 'px,0)' + (l.el.getAttribute('data-rot') || '');
-    }
-  }
-  /* The covers carry a rotation in CSS; keep it when we set a transform. */
-  layers.forEach(function (l) {
-    var m = getComputedStyle(l.el).transform;
-    if (m && m !== 'none') {
-      var v = m.match(/matrix\(([^)]+)\)/);
-      if (v) {
-        var a = v[1].split(',').map(parseFloat);
-        var deg = Math.round(Math.atan2(a[1], a[0]) * 180 / Math.PI);
-        if (deg) l.el.setAttribute('data-rot', ' rotate(' + deg + 'deg)');
-      }
-    }
-  });
-
-  /* Reveals: once, when a block enters the lower part of the viewport. */
-  var io = 'IntersectionObserver' in window;
-  var reveals = doc.querySelectorAll('.reveal');
-  if (io && !reduced) {
-    var ro = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) { e.target.classList.add('is-in'); ro.unobserve(e.target); }
-      });
-    }, { rootMargin: '0px 0px -10% 0px', threshold: 0.1 });
+  /* Reveal sections as they arrive. */
+  var reveals = document.querySelectorAll('[data-reveal]');
+  if ('IntersectionObserver' in window && !reduced) {
+    var ro = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); ro.unobserve(e.target); } });
+    }, { rootMargin: '0px 0px -12% 0px', threshold: 0.08 });
     reveals.forEach(function (el) { ro.observe(el); });
-  } else {
-    reveals.forEach(function (el) { el.classList.add('is-in'); });
-  }
+  } else reveals.forEach(function (el) { el.classList.add('in'); });
 
-  /* Lazy videos: load when near, play in view, pause out of view. */
-  var lazies = doc.querySelectorAll('video.lazy-video');
-  function loadVideo(v) {
-    if (!v.getAttribute('src')) { v.src = v.getAttribute('data-src'); v.load(); }
-  }
-  if (io) {
-    var vo = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
+  /* Videos: load when near, play only while on screen. */
+  var vids = document.querySelectorAll('video.loop');
+  if ('IntersectionObserver' in window) {
+    var near = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
         var v = e.target;
-        if (e.isIntersecting) {
-          loadVideo(v);
-          var p = v.play(); if (p && p.catch) p.catch(function () {});
-        } else if (v.getAttribute('src')) {
-          v.pause();
-        }
+        if (e.isIntersecting && v.dataset.src && !v.src) { v.src = v.dataset.src; v.load(); }
       });
-    }, { rootMargin: '40% 0px 40% 0px' });
-    lazies.forEach(function (v) { vo.observe(v); });
-  } else {
-    lazies.forEach(function (v) { loadVideo(v); v.play(); });
-  }
-
-  /* Sticky stories: the image follows whichever beat is nearest the middle of the screen. */
-  var stories = [];
-  doc.querySelectorAll('.story').forEach(function (story) {
-    var swap = story.querySelector('[data-swap]');
-    if (!swap) return;
-    stories.push({
-      imgs: Array.prototype.slice.call(swap.querySelectorAll('img')),
-      beats: Array.prototype.slice.call(story.querySelectorAll('.beat[data-beat]')),
-      on: -1
-    });
-  });
-  function updateStories() {
-    var mid = window.innerHeight / 2;
-    stories.forEach(function (st) {
-      var best = -1, bestD = Infinity;
-      st.beats.forEach(function (b, i) {
-        var r = b.getBoundingClientRect();
-        var d = Math.abs((r.top + r.bottom) / 2 - mid);
-        if (d < bestD) { bestD = d; best = i; }
+    }, { rootMargin: '900px 0px' });
+    var seen = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        var v = e.target;
+        if (e.isIntersecting && !reduced) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+        else v.pause();
       });
-      if (best !== st.on) {
-        st.on = best;
-        var key = st.beats[best].getAttribute('data-beat');
-        st.imgs.forEach(function (im) { im.classList.toggle('is-on', im.getAttribute('data-beat') === key); });
-      }
-    });
+    }, { threshold: 0.25 });
+    vids.forEach(function (v) { near.observe(v); seen.observe(v); });
   }
-
-  /* Scroll scrubbed sequences. */
-  var scrubs = [];
-  doc.querySelectorAll('.scrub').forEach(function (sec) {
-    var count = parseInt(sec.getAttribute('data-count'), 10);
-    var base = sec.getAttribute('data-seq');
-    var canvas = sec.querySelector('canvas');
-    var ctx = canvas.getContext('2d', { alpha: false });
-    ctx.imageSmoothingEnabled = false;
-    var caps = Array.prototype.slice.call(sec.querySelectorAll('.cap')).map(function (c) {
-      return { el: c, from: parseInt(c.getAttribute('data-from'), 10), to: parseInt(c.getAttribute('data-to'), 10) };
-    });
-    var s = {
-      sec: sec, track: sec.querySelector('.scrub-track'), stage: sec.querySelector('.scrub-stage'),
-      canvas: canvas, ctx: ctx, count: count, base: base, caps: caps,
-      frames: new Array(count), loaded: 0, loading: false, drawn: -1, capOn: -1,
-      bar: sec.querySelector('.scrub-loading'), key: parseInt(sec.getAttribute('data-key'), 10) || 0,
-      top: 0, span: 1
-    };
-    scrubs.push(s);
+  if (reduced) vids.forEach(function (v) {         // no autoplay: a click plays or pauses
+    v.removeAttribute('autoplay'); v.pause();
+    v.addEventListener('click', function () { if (!v.src && v.dataset.src) v.src = v.dataset.src; v.paused ? v.play() : v.pause(); });
   });
 
-  function frameUrl(s, i) { return s.base + '/' + ('00' + i).slice(-3) + '.webp'; }
+  /* Hero: the screen tilts up to face you and the cover wall drifts as you scroll. */
+  var heroDev = document.querySelector('.hero-device');
+  var wall = document.querySelector('.wall-wrap');
 
-  function loadSeq(s) {
-    if (s.loading) return;
-    s.loading = true;
-    var next = 0, inflight = 0, lanes = 4;
-    function pump() {
-      while (inflight < lanes && next < s.count) {
-        (function (i) {
-          var im = new Image();
-          inflight++;
-          im.onload = im.onerror = function () {
-            inflight--; s.loaded++;
-            s.frames[i] = im.complete && im.naturalWidth ? im : null;
-            if (s.bar) {
-              s.bar.firstElementChild.style.width = Math.round(100 * s.loaded / s.count) + '%';
-              if (s.loaded >= s.count) s.bar.classList.add('is-done');
-            }
-            draw(s, true);
-            pump();
-          };
-          im.src = frameUrl(s, i);
-        })(next++);
-      }
-    }
-    /* The key frame first, so something shows at once. */
-    var k = new Image();
-    k.onload = function () { s.frames[s.key] = k; draw(s, true); };
-    k.src = frameUrl(s, s.key);
-    pump();
+  /* Before and after: scrolling wipes the stock list away; dragging takes over. */
+  var compare = document.getElementById('compare');
+  var ba = document.getElementById('ba');
+  var handle = ba && ba.querySelector('.ba-handle');
+  var dev = ba && ba.closest('.compare-device');
+  var manual = false;
+  function setP(p) {
+    p = clamp(p, 0, 100);
+    ba.style.setProperty('--p', p.toFixed(2) + '%');
+    handle.setAttribute('aria-valuenow', Math.round(p));
+    dev.classList.toggle('at-before', p > 88);
+    dev.classList.toggle('at-after', p < 12);
   }
-
-  function nearestLoaded(s, i) {
-    if (s.frames[i]) return s.frames[i];
-    for (var d = 1; d < s.count; d++) {
-      if (i - d >= 0 && s.frames[i - d]) return s.frames[i - d];
-      if (i + d < s.count && s.frames[i + d]) return s.frames[i + d];
-    }
-    return null;
+  function fromPointer(ev) {
+    var r = ba.getBoundingClientRect();
+    setP(100 * (ev.clientX - r.left) / r.width);
   }
-
-  function targetIndex(s) {
-    if (reduced) return s.key;
-    var y = window.scrollY;
-    var p = (y - s.top) / s.span;
-    if (p < 0) p = 0; if (p > 1) p = 1;
-    return Math.round(p * (s.count - 1));
-  }
-
-  function draw(s, force) {
-    var i = targetIndex(s);
-    var im = nearestLoaded(s, i);
-    if (im && (force || s.drawn !== i)) {
-      s.ctx.imageSmoothingEnabled = false;
-      s.ctx.drawImage(im, 0, 0, s.canvas.width, s.canvas.height);
-      s.drawn = i;
-    }
-    if (s.capOn !== i) {
-      s.caps.forEach(function (c) { c.el.classList.toggle('is-on', reduced || (i >= c.from && i <= c.to)); });
-      s.capOn = i;
-    }
-  }
-
-  function layoutScrubs() {
-    scrubs.forEach(function (s) {
-      var r = s.track.getBoundingClientRect();
-      s.top = r.top + window.scrollY;
-      s.span = Math.max(1, s.track.offsetHeight - window.innerHeight);
+  if (ba) {
+    var dragging = false;
+    ba.addEventListener('pointerdown', function (ev) { dragging = true; manual = true; ba.setPointerCapture(ev.pointerId); fromPointer(ev); });
+    ba.addEventListener('pointermove', function (ev) { if (dragging) fromPointer(ev); });
+    ba.addEventListener('pointerup', function () { dragging = false; });
+    ba.addEventListener('pointercancel', function () { dragging = false; });
+    handle.addEventListener('keydown', function (ev) {
+      var now = parseFloat(ba.style.getPropertyValue('--p')) || 50;
+      if (ev.key === 'ArrowLeft') { manual = true; setP(now - 5); ev.preventDefault(); }
+      if (ev.key === 'ArrowRight') { manual = true; setP(now + 5); ev.preventDefault(); }
     });
+    if (reduced) { compare.style.height = 'auto'; compare.querySelector('.compare-stick').style.position = 'relative'; setP(50); }
   }
 
-  /* Start loading a sequence when it is within two screens. */
-  function maybeLoad() {
-    scrubs.forEach(function (s) {
-      if (s.loading) return;
-      var r = s.sec.getBoundingClientRect();
-      if (r.top < window.innerHeight * 2 && r.bottom > -window.innerHeight) loadSeq(s);
-    });
-  }
-
-  /* One frame loop for scroll work. */
   var ticking = false;
-  function onScroll() {
-    if (ticking) return;
-    ticking = true;
-    requestAnimationFrame(function () {
-      ticking = false;
-      navState();
-      parallax();
-      updateStories();
-      maybeLoad();
-      scrubs.forEach(function (s) { draw(s, false); });
-    });
+  function frame() {
+    ticking = false;
+    var y = window.scrollY, vh = window.innerHeight;
+    navState();
+    if (reduced) return;
+    if (heroDev) {
+      var t = clamp(y / (vh * 0.7), 0, 1), e = smooth(t);
+      heroDev.style.setProperty('--tilt', (14 * (1 - e)).toFixed(2) + 'deg');
+      heroDev.style.setProperty('--sc', (0.94 + 0.06 * e).toFixed(4));
+    }
+    if (wall) wall.style.setProperty('--wy', (y * -0.18).toFixed(1) + 'px');
+    if (ba && !manual) {
+      var r = compare.getBoundingClientRect();
+      var span = compare.offsetHeight - vh;
+      var k = clamp((-r.top - vh * 0.05) / (span * 0.8), 0, 1);
+      setP(100 - 100 * smooth(k));
+    }
   }
+  function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(frame); } }
   window.addEventListener('scroll', onScroll, { passive: true });
-  window.addEventListener('load', function () { layoutScrubs(); onScroll(); });
-  layoutScrubs();
-  onScroll();
-  if (reduced) scrubs.forEach(loadSeqKeyOnly);
-
-  function loadSeqKeyOnly(s) {
-    var k = new Image();
-    k.onload = function () { s.frames[s.key] = k; draw(s, true); };
-    k.src = frameUrl(s, s.key);
-    s.loading = true;
-    s.caps.forEach(function (c) { c.el.classList.add('is-on'); });
-  }
+  window.addEventListener('resize', onScroll);
+  frame();
 })();
