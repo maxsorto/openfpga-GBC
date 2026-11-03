@@ -71,6 +71,9 @@ module tb_vt;
 `ifdef SCEN_E
   `define SCEN_B
 `endif
+`ifdef SCEN_F
+  `define SCEN_B
+`endif
 `ifdef SCEN_B
     cart_hdr = {224{1'b1}};
 `else
@@ -138,6 +141,8 @@ module tb_vt;
       if (cap) begin $sformat(fn, "vt_d/f_%03d.ppm", frame); f = $fopen(fn, "wb"); $fwrite(f, "P6\n320 288\n255\n"); end
 `elsif SCEN_C
       if (cap) begin $sformat(fn, "vt_c/f_%03d.ppm", frame); f = $fopen(fn, "wb"); $fwrite(f, "P6\n320 288\n255\n"); end
+`elsif SCEN_F
+      if (cap) begin $sformat(fn, "vt_f/f_%03d.ppm", frame); f = $fopen(fn, "wb"); $fwrite(f, "P6\n320 288\n255\n"); end
 `elsif SCEN_B
       if (cap) begin $sformat(fn, "vt_b/f_%03d.ppm", frame); f = $fopen(fn, "wb"); $fwrite(f, "P6\n320 288\n255\n"); end
 `else
@@ -187,6 +192,35 @@ module tb_vt;
     wait (dut.state == 23 && dut.level == 8); frames(2);
     cont1_key[3] = 1; frames(2); cont1_key[3] = 0; frames(12);
     $display("B: list idx %0d (want 1)", dut.idx); if (dut.idx != 1) errs = errs + 1;
+`ifdef SCEN_F
+    // the empty slot, Home while playing a cart, the launch zoom
+    $display("F: slot_ok %0d (want 1) flags %h", dut.slot_ok, dut.crt_flags); if (!dut.slot_ok) errs = errs + 1;
+    cont1_key[14] = 1; frames(2); cont1_key[14] = 0;                   // Select from All: the empty slot drops in
+    wait (dut.vt_busy); wait (!dut.vt_busy); frames(6);
+    $display("F: none view: cart_view %0d cart_none %0d idx %0d (want %0d) title width %0d glow %0d legend %0d", dut.cart_view, dut.cart_none, dut.idx, dut.count + 3, dut.htw, dut.glow, dut.lgw);
+    if (!dut.cart_view || !dut.cart_none || dut.idx != dut.count + 3 || dut.htw == 0 || dut.lgw == 0) errs = errs + 1;
+    cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(4);          // A does nothing here
+    if (dut.state != 23 || !dut.cart_none) errs = errs + 1;
+    cart_hdr = crystal; probe_now; wait (dut.vt_busy); wait (!dut.vt_busy); frames(4);   // a cart arrives over the slot
+    $display("F: cart arrived: idx %0d (want 5) cart_none %0d view %0d", dut.idx, dut.cart_none, dut.cart_view);
+    if (dut.idx != 5 || dut.cart_none || !dut.cart_view) errs = errs + 1;
+    cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(20);         // A: play the cart
+    if (dut.state != 120 || !cart_mode) errs = errs + 1;
+    cont1_key[8] = 1; frames(2); cont1_key[8] = 0; frames(3);          // L: the pause panel
+    $display("F: paused: state %0d (63) ovl %0d", dut.state, dut.ovl); if (dut.state != 63 || !dut.ovl) errs = errs + 1;
+    cont1_key[1] = 1; frames(2); cont1_key[1] = 0; frames(2);          // Down: Home
+    cont1_key[4] = 1; frames(2); cont1_key[4] = 0;                     // A: back to the cartridge view, the cover drops in
+    wait (dut.vt_busy); wait (!dut.vt_busy); frames(6);
+    $display("F: home: state %0d menu %0d cart_view %0d cart_mode %0d hold %0d idx %0d glow %0d", dut.state, dut.menu_active, dut.cart_view, cart_mode, hold_gb, dut.idx, dut.glow);
+    if (dut.state != 23 || !dut.menu_active || !dut.cart_view || cart_mode || !hold_gb || dut.idx != 5) errs = errs + 1;
+    cont1_key[2] = 1; frames(2); cont1_key[2] = 0; wait (dut.vt_busy); wait (!dut.vt_busy); frames(4);   // Left: the list
+    $display("F: list idx %0d view %0d", dut.idx, dut.cart_view); if (dut.cart_view) errs = errs + 1;
+    cont1_key[4] = 1; frames(2); cont1_key[4] = 0; frames(3);          // A on a game: the zoom starts with the fade
+    $display("F: launch: zm %0d cs1 %0d (want > 128) level %0d state %0d", dut.zm, dut.cs[1], dut.level, dut.state);
+    if (!dut.zm || dut.cs[1] <= 128) errs = errs + 1;
+    frames(30);
+    $display("RESULT %s (%0d errors)", errs == 0 ? "PASS" : "FAIL", errs); $finish;
+`endif
 `ifdef SCEN_E
     // A on a seated cart boots it in physical cartridge mode
     cart_hdr = crystal; probe_now; wait (dut.vt_busy); wait (!dut.vt_busy); frames(4);

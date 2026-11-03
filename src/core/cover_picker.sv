@@ -124,13 +124,13 @@ localparam [23:0] ART_WORD   = 24'h400000;             // 64 KB (32K words) per 
 wire [3:0]  region  = pack_addr[19:16];
 wire [15:0] roff    = pack_addr[15:0];
 
-wire        ent_we = pack_wr && region == 0 && roff[15:12] == 0;
+wire        ent_we = pack_wr && region == 0 && roff[15:11] == 0;
 
 reg  [10:0] ent_raddr = 0;
 wire [15:0] ent_q;
-picker_dpram #(.WIDTH(16), .ADDR(11)) ent_ram (
+picker_dpram #(.WIDTH(16), .ADDR(10)) ent_ram (
     .wclk(clk_74a), .we(ent_we), .waddr(roff[11:1]), .wdata(pack_data),
-    .rclk(clk_74a), .raddr(ent_raddr), .q(ent_q));
+    .rclk(clk_74a), .raddr(ent_raddr[9:0]), .q(ent_q));
 
 // text layout map, written by the FSM, read by the renderer: {valid, char[6:0], col[2:0]}; line 1 at 0, line 2 at 256
 reg         map_we = 0;
@@ -144,12 +144,12 @@ picker_dpram #(.WIDTH(16), .ADDR(9)) map_ram (
 
 // hi-res layout map (title at 0, platform at 512): {valid, char[6:0], col[3:0]}
 reg         map2_we = 0;
-reg  [9:0]  map2_wa = 0;
+reg  [10:0] map2_wa = 0;
 reg  [11:0] map2_wd = 0;
-wire [9:0]  map2_ra;
-wire [15:0] map2_q;
-picker_dpram #(.WIDTH(16), .ADDR(10)) map2_ram (
-    .wclk(clk_74a), .we(map2_we), .waddr(map2_wa), .wdata({4'd0, map2_wd}),
+wire [10:0] map2_ra;
+wire [11:0] map2_q;
+picker_dpram #(.WIDTH(12), .ADDR(11)) map2_ram (
+    .wclk(clk_74a), .we(map2_we), .waddr(map2_wa), .wdata(map2_wd),
     .rclk(clk_vid), .raddr(map2_ra), .q(map2_q));
 
 // glyph widths for layout: 5x7 (pause panel) and the hi-res font
@@ -157,6 +157,19 @@ reg [3:0] wrom [0:127];
 initial $readmemh("font5x7_width.hex", wrom);
 reg [3:0] wrom2 [0:127];
 initial $readmemh("font_hr_width.hex", wrom2);
+reg [3:0] wrom3 [0:63];
+initial $readmemh("font_sm_width.hex", wrom3);
+// the button legend's string (up to 63 characters and a 0), built by the FSM from the context, laid out as line 3
+reg         lstr_we = 0; reg [5:0] lstr_wa = 0, lstr_ra = 0; reg [5:0] lstr_wd = 0;
+(* ramstyle = "MLAB" *) reg [5:0] lstr_m [0:63];
+reg  [5:0]  lstr_q = 0;
+integer lsi;
+initial for (lsi = 0; lsi < 64; lsi = lsi + 1) lstr_m[lsi] = 0;
+always @(posedge clk_74a) begin if (lstr_we) lstr_m[lstr_wa] <= lstr_wd; lstr_q <= lstr_m[lstr_ra]; end
+// the legend font holds only what the legend uses: compact code 1..26 A to Z, 27 space, 28..41 the pictures 1..14
+function [5:0] leg_code(input [7:0] c);
+    leg_code = (c >= "A" && c <= "Z") ? c[5:0] - 6'd0 : (c == " ") ? 6'd27 : (c != 0 && c < 8'd15) ? 6'd27 + c[5:0] : 6'd0;
+endfunction
 
 // ================================================================== 0x0192 parameter struct
 reg  [6:0]  param_waddr = 0;
@@ -181,7 +194,7 @@ wire frame_tick = vs_s[1] & ~vs_s[2];
 reg [3:0] level = 0, level_target = 0;
 always @(posedge clk_74a) if (frame_tick) begin
     if (level < level_target) level <= level + 1'b1;
-    else if (level > level_target) level <= (level >= 2) ? level - 2'd2 : 4'd0;
+    else if (level > level_target) level <= zm ? level - 1'b1 : (level >= 2) ? level - 2'd2 : 4'd0;   // slower under the zoom
 end
 
 // ================================================================== buttons
@@ -234,6 +247,10 @@ function [7:0] bad_char(input [5:0] j);
     reg [143:0] t;
     begin t = "Clean the contacts"; bad_char = (j < 18) ? t[143 - j * 8 -: 8] : 8'd0; end
 endfunction
+function [7:0] none_char(input [5:0] j);
+    reg [95:0] t;
+    begin t = "No cartridge"; none_char = (j < 12) ? t[95 - j * 8 -: 8] : 8'd0; end
+endfunction
 // title character j from a cart header: 16 bytes, 11 on Color carts (a game code follows), '_' as a space,
 // anything unprintable ends it
 function [7:0] hdr_char(input [223:0] h, input [5:0] j);
@@ -263,11 +280,12 @@ localparam [6:0]
     S_FW1 = 102, S_GM = 103, S_GMA = 104, S_GMF = 105, S_GMF2 = 106, S_MODE = 107,
     S_CP0 = 108, S_CP1 = 109, S_CP2 = 110, S_CP3 = 111, S_CP4 = 112, S_CP5 = 113, S_CP6 = 114, S_CP7 = 115,
     S_CP8 = 116, S_CP9 = 117, S_CPM = 118, S_CRUN0 = 119, S_CRUN = 120,
-    S_CPH = 121, S_CPH2 = 122, S_CP10 = 123, S_CP11 = 124, S_CPD = 125, S_CPX = 126;
+    S_CPH = 121, S_CPH2 = 122, S_CP10 = 123, S_CP11 = 124, S_CPD = 125, S_CPX = 126, S_LB0 = 127, S_LB1 = 48;
+localparam [7:0] S_LC6 = 128, S_LC7 = 129, S_FL0 = 130, S_FL1 = 131, S_MAP_WAIT3 = 132;
 localparam [1:0] PK_ROM = 0, PK_SAV = 1, PK_SUS = 2;
-localparam [12:0] LOG_BYTES = 13'd4096;   // debug log file size
+localparam [12:0] LOG_BYTES = 13'd2048;   // debug log file size (256 records)
 
-reg  [6:0]  state = S_BOOT, op_ret = S_BOOT;
+reg  [7:0]  state = S_BOOT, op_ret = S_BOOT;
 reg  [1:0]  pk = 0;                // path struct kind for the open subroutine
 reg  [31:0] pflags = 0, psize = 0;
 reg  [15:0] op_slot = 0;
@@ -283,13 +301,57 @@ reg         cur_favp = 0;          // the pack marks it a favorite (entry flags 
 // favorite changes made on the Pocket this session and since the last sync (favorites.cfg), newest last
 localparam FN = 15;
 reg  [31:0] fv_crc [0:FN-1]; reg fv_st [0:FN-1]; reg [3:0] fv_n = 0;
+reg  [10:0] fv_fp [0:FN-1], fv_ap [0:FN-1];   // the game's favorites block position (0x7FF: none) and A to Z position
+reg  [10:0] cur_fp = 11'h7FF, cur_ap = 0;     // the selected entry's (pack v7 with CRT1 flags bit 3; else none / idx)
+// live favorites: Favorites mode reads its positions from a list rebuilt from the pack's favorites block and the
+// session's changes (unstarred ones dropped, newly starred ones appended), so a star counts at once
+wire        live = crt_ok && crt_flags[3];
+reg         fl_req = 0, fl_ack = 0;           // rebuild request (toggle) and its acknowledgement
+reg  [10:0] lfav_n = 0;                       // the live list's length
+wire        fl_valid = fl_req == fl_ack;
+reg         fl_we = 0; reg [10:0] fl_wa = 0, fl_wd = 0, fl_ra = 0, gen_addr = 0, rr_addr = 0;
+wire [10:0] fl_q;
+picker_dpram #(.WIDTH(11), .ADDR(11)) fl_ram (.wclk(clk_74a), .we(fl_we), .waddr(fl_wa), .wdata(fl_wd), .rclk(clk_74a), .raddr(fl_ra), .q(fl_q));
+wire [10:0] fcount = live ? lfav_n : fav_count;   // favorites shown
+// rebuild: walk the pack's favorites block and keep each position unless the newest change for it is "off"; then
+// append, in order, every change that is "on" for a game outside the block whose newest same-CRC change it is
+reg  [2:0]  rb_st = 0; reg [10:0] rb_p = 0, rb_n = 0; reg [3:0] rb_r = 0, rb_r2 = 0; reg rb_skip = 0, rb_last = 0;
+always @(posedge clk_74a) begin
+    fl_we <= 0;
+    case (rb_st)
+    0: if (fl_req != fl_ack) begin rb_p <= 0; rb_n <= 0; rb_r <= 0; rb_skip <= 0; rb_st <= 3'd1; end
+    1: begin                                         // position rb_p: scan the changes for its newest record
+        if (rb_p >= fav_count) begin rb_r <= 0; rb_r2 <= 0; rb_last <= 1; rb_st <= 3'd3; end
+        else if (rb_r < fv_n) begin if (fv_fp[rb_r] == rb_p) rb_skip <= !fv_st[rb_r]; rb_r <= rb_r + 1'b1; end
+        else begin
+            if (!rb_skip) begin fl_we <= 1; fl_wa <= rb_n; fl_wd <= rb_p; rb_n <= rb_n + 1'b1; end
+            rb_p <= rb_p + 1'b1; rb_r <= 0; rb_skip <= 0;
+        end
+    end
+    3: begin                                         // change rb_r: is it the newest for its CRC? (rb_r2 scans after it)
+        if (rb_r >= fv_n) begin lfav_n <= rb_n; fl_ack <= fl_req; rb_st <= 0; end
+        else if (rb_r2 < fv_n) begin if (rb_r2 > rb_r && fv_crc[rb_r2] == fv_crc[rb_r]) rb_last <= 0; rb_r2 <= rb_r2 + 1'b1; end
+        else begin
+            if (rb_last && fv_st[rb_r] && fv_fp[rb_r] == 11'h7FF && rb_n < 11'd2040) begin fl_we <= 1; fl_wa <= rb_n; fl_wd <= fv_ap[rb_r]; rb_n <= rb_n + 1'b1; end
+            rb_r <= rb_r + 1'b1; rb_r2 <= 0; rb_last <= 1;
+        end
+    end
+    default: rb_st <= 0;
+    endcase
+end
 reg         fav_ok = 0;            // favorites.cfg was found or created, so changes can be saved
+reg         fl_lift = 0;           // the change being saved removes the selected favorite (lift it out)
+reg  [7:0]  fl_ret = 0;            // where a rebuild returns: the entry load at boot, the options after a change
+reg         lt_go = 0;             // start the lift
+reg         zm_go = 0, zm_in = 0, zm_home = 0;   // the zoom: into a game (the cover grows as the menu fades) or back out
 reg  [3:0]  fj = 0; reg fhit = 0, fval = 0;
+reg  [6:0]  fw = 0; reg fv_v2 = 0;  // favorites.cfg word counter and record format
 // options menu (X) and list mode (Select)
 reg         gm_on = 0; reg [1:0] gm_sel = 0;     // 0 Play, 1 Start over (only when suspended), 2 Favorite, 3 Back
 reg         fav_mode = 0;          // Select: only the favorites at the top of the list
 // Play Cartridge: the cart's header is read and looked up in the pack's fingerprint table (FPR1)
 reg         cart_view = 0;         // showing the inserted cartridge's cover (A boots the cart)
+reg         cart_none = 0;         // the cartridge view with nothing in the slot: the empty slot drawing (CRT1 flag 4)
 reg         cart_checked = 0;
 reg         cart_found = 0; reg [10:0] cart_idx = 0;   // a cart we own is inserted, and its pack entry
 reg  [2:0]  cpd_s = 0;
@@ -323,7 +385,7 @@ reg         cart_bad = 0;          // its title bytes aren't ASCII: a misread (d
 reg  [1:0]  cart_type = 0;
 reg  [6:0]  crl_n = 0;             // records in carts.cfg
 reg  [223:0] crl_last = 0;         // the header last logged this session
-reg  [6:0]  cl_ret = 0;
+reg  [7:0]  cl_ret = 0;
 reg         pcart = 0;             // path struct = carts.cfg (after favorites.cfg)
 reg  [10:0] lidx = 0;              // list position to return to from the cart view
 reg         lmode = 0;             // and its mode (1: Favorites)
@@ -349,15 +411,19 @@ reg  [6:0]  copy_i = 0;
 reg  [15:0] lo_word = 0;
 reg         game_loaded = 0, done_1 = 0;
 reg  [5:0]  k = 0;                 // character index while laying out text
+reg  [7:0]  chr = 0;               // the character at k, registered a cycle before S_MAP_CHAR
 reg         line2 = 0;             // laying out line 2 (platform) instead of the title
 reg  [7:0]  ch = 0;
 reg  [3:0]  gw = 0, col = 0;
-reg  [9:0]  mp = 0;
+reg  [10:0] mp = 0;
 reg  [7:0]  title_w = 0;
-reg  [8:0]  htw = 0, hsw = 0;      // hi-res title / platform widths
+reg  [8:0]  htw = 0, hsw = 0, lgw = 0;   // hi-res title / platform / legend widths
+reg         line3 = 0, lonly = 0;  // laying out the legend; only the legend (the context changed)
+reg  [2:0]  lb_h = 0; reg [5:0] lb_j = 0, lb_n = 0; reg [1:0] lb_g = 0;   // legend builder: hint slot, character, length, gap count
+reg  [6:0]  leg_built = 7'h7F;     // the context the string was built for
 reg         lf = 0;                // layout pass for the hi-res font
 reg  [10:0] af_g = 0;              // art loader: game being fetched
-reg  [6:0]  af_ret = 0;            // art loader: state to return to
+reg  [7:0]  af_ret = 0;            // art loader: state to return to
 reg  [1:0]  art_try = 0;           // art loader: retries left for this game
 reg         pend_l = 0, pend_r = 0, pend_a = 0;   // presses that arrived while the loader was busy
 reg         pend_u = 0, pend_d = 0;               // Up / Down: jump to the previous / next section
@@ -376,6 +442,7 @@ reg  signed [7:0] lat_y = 0;       // the rows' shift during a scroll
 reg  [4:0]  lat_b = 0, side_b = 0; // lattice / flow side cover brightness during the morph
 reg  signed [10:0] p_x = 0, p_y = 0, p_fx = 0, p_fy = 0, p_tx = 0, p_ty = 0; reg [7:0] p_s = 0, p_fs = 0, p_ts = 0;
 reg         g_go = 0, g_go1 = 0, g_go2 = 0; reg [1:0] g_kind = 0;   // from the FSM: 0 idx changed, 1 morph in, 2 out
+reg  [8:0]  mk_r = 0, mv_r = 0; reg [6:0] sc_r = 0;   // this frame's morph, move and scroll curve values, registered
 wire        g_anim = g_morph | g_move | g_scroll;
 wire        grid_draw = grid | g_morph;
 wire signed [9:0] g_base = $signed({1'b0, g_top}) - $signed({9'd0, g_up});   // list row of lattice row 0
@@ -391,8 +458,9 @@ reg         dbg_art_err = 0, dbg_art_done = 0;   // diagnostics: a refused art r
 reg         is_gb = 0;
 reg         gen = 0;               // toggles on every new selection (marquee restart)
 wire        done_rise = target_dataslot_done & ~done_1;
-wire [6:0]  cp_none = S_CPX;       // no cart we own (or none at all): see S_CPX
-wire        vsel = cart_view && cart_unk;   // the selection is a default cartridge image (index count + type)
+wire [7:0]  cp_none = S_CPX;       // no cart we own (or none at all): see S_CPX
+wire        vsel = cart_view && (cart_unk || cart_none);   // the selection is a default image (index count + type, or count + 3: the empty slot)
+wire        slot_ok = crt_ok && crt_flags[2];   // the pack has the empty slot drawing
 wire [10:0] lcnt = (crt_ok && lcount != 0 && lcount <= count) ? lcount : count;   // list length
 
 wire [10:0] ebase = 11'd8;          // the selected game's entry is read to word 8 (after the 16 byte header)
@@ -403,17 +471,38 @@ wire [10:0] ebase = 11'd8;          // the selected game's entry is read to word
 reg  [10:0] rcount = 0;
 wire        tile_ok = crt_ok && crt_flags[1] && fav_count != 0 && count < 11'd2044;
 always @(posedge clk_74a) begin
-    rcount <= cart_view ? 11'd1 : (fav_mode && fav_count != 0) ? fav_count + {10'd0, tile_ok} : lcnt - fav_count;
+    rcount <= cart_view ? 11'd1 : (fav_mode && fav_count != 0) ? fcount + {10'd0, tile_ok} : lcnt - fav_count;
     rlo    <= cart_view ? idx : (fav_mode && fav_count != 0) ? 11'd0 : fav_count;
 end
 wire [10:0] rhi  = rlo + rcount - 1'b1;
 wire [10:0] prev = (idx <= rlo) ? rhi : idx - 1'b1;
 wire [10:0] next = (idx >= rhi) ? rlo : idx + 1'b1;
 reg         vtile = 0;             // the All games cover is selected (registered: it feeds the text layout)
-always @(posedge clk_74a) vtile <= fav_mode && tile_ok && idx == fav_count && !cart_view;
-function [10:0] vmap(input [10:0] pos);              // list position -> game (cover and entry)
-    vmap = (fav_mode && tile_ok && !cart_view && pos == fav_count) ? count + 11'd3 : pos;
+always @(posedge clk_74a) vtile <= fav_mode && tile_ok && idx == fcount && !cart_view;
+function [10:0] vmap(input [10:0] pos);              // list position -> game (cover and entry), the pack's own order
+    vmap = (fav_mode && tile_ok && !cart_view && pos == fcount) ? count + 11'd3 + {10'd0, crt_flags[2]} : pos;
 endfunction
+// a Favorites position through the live list (fl_q read two cycles after its address): the tile stays virtual
+function [10:0] lmap(input [10:0] pos, input [10:0] q);
+    lmap = (fav_mode && tile_ok && !cart_view && pos == fcount) ? count + 11'd3 + {10'd0, crt_flags[2]} : (fav_mode && live && !cart_view) ? q : pos;
+endfunction
+// the games at the selection and its neighbours, read from the live list round robin (fl_ram_b); the entry loader
+// and the grid's side covers use them
+reg  [1:0]  lk = 0, lk_1 = 0, lk_2 = 0; reg [1:0] rr_own = 0;
+reg  [10:0] g_cur = 0, g_prev = 0, g_next = 0;
+reg  [10:0] rr_src1 = 0, rr_src2 = 0, g_cur_src = 11'h7FF;   // the idx a lookup was made for
+wire        gen_busy = cph >= 3'd2;                  // the generator owns the port while one of its reads is in flight
+wire [10:0] rr_a = (lk == 0) ? idx : (lk == 1) ? prev : next;
+// the lookup only matters when Favorites mode reads the live list; otherwise the position is the game
+wire        g_cur_ok = !(fav_mode && live) || (g_cur_src == idx && fl_valid);
+wire [10:0] cur_g = (fav_mode && live) ? g_cur : vmap(idx);
+always @(posedge clk_74a) begin
+    fl_ra <= gen_busy ? gen_addr : rr_a;
+    rr_own <= {rr_own[0], !gen_busy};                // whose read answers two cycles later
+    if (!gen_busy) lk <= (lk == 2'd2) ? 2'd0 : lk + 1'b1;   // rotate only on a read that was issued: no address is starved
+    lk_1 <= lk; lk_2 <= lk_1; rr_src1 <= idx; rr_src2 <= rr_src1;
+    if (rr_own[1]) case (lk_2) 0: begin g_cur <= lmap(idx, fl_q); g_cur_src <= rr_src2; end 1: g_prev <= lmap(prev, fl_q); default: g_next <= lmap(next, fl_q); endcase
+end
 // pack layout, computed once after the header is read (registered: these feed 32-bit offsets)
 reg  [31:0] stride = 0;            // v7 pads every cover to 64 KB, v6 packs them at 45568 B
 reg  [31:0] blob0 = 0, paths0 = 0, lay_t = 0;
@@ -459,31 +548,31 @@ reg last_left = 0;                 // direction of the last step, for prefetch
 // In the grid view the candidates are the lattice's cells instead: its three rows (0..11, which are also what the
 // lattice draws), then the row below (12..15), then the row above (16..19); positions past the list are not valid.
 reg  [10:0] cgame [0:19]; reg cok [0:19];
-reg  [4:0]  cj = 0; reg cph = 0; reg signed [12:0] cgv = 0;
+reg  [4:0]  cj = 0; reg [2:0] cph = 0; reg signed [12:0] cgv = 0; reg cok_p = 0;
 reg  [10:0] c_idx = 11'h7FF, c_cnt = 0, c_lo = 0; reg c_left = 0; reg signed [9:0] c_gb = 0; reg c_grid = 0;
 reg         c_valid = 0;           // every candidate matches the current selection (one full pass since the change)
 wire        use_grid = grid_draw && !cart_view;   // the grid's layout and candidates (the cart view is the flow's)
 wire [4:0]  nc = use_grid ? 5'd20 : 5'd11;        // candidates in use
 always @(posedge clk_74a) begin
-    if (idx != c_idx || rcount != c_cnt || last_left != c_left || rlo != c_lo || g_base != c_gb || use_grid != c_grid) begin
+    if (idx != c_idx || rcount != c_cnt || last_left != c_left || rlo != c_lo || g_base != c_gb || use_grid != c_grid || !fl_valid) begin
         c_idx <= idx; c_cnt <= rcount; c_left <= last_left; c_lo <= rlo; c_gb <= g_base; c_grid <= use_grid; cj <= 0; cph <= 0; c_valid <= 0;
     end else if (rcount != 0) begin
-        if (use_grid) begin : gridc
+        if (cph >= 3'd2 && cph <= 3'd4) cph <= cph + 1'b1;   // the list RAM answers four cycles after the request (the port mux, then the RAM)
+        else if (cph == 3'd5) begin
+            cgame[cj] <= lmap(cgv[10:0], fl_q); cok[cj] <= cok_p; cph <= 0;
+            if (use_grid) begin cj <= (cj == 5'd19) ? 5'd0 : cj + 1'b1; if (cj == 5'd19) c_valid <= 1; end
+            else begin cj <= (cj == 5'd10) ? 5'd0 : cj + 1'b1; if (cj == 5'd10) c_valid <= 1; end
+        end
+        else if (use_grid) begin : gridc
             reg signed [11:0] grow; reg signed [12:0] gpos;
             grow = $signed({{2{g_base[9]}}, g_base}) + ((cj < 5'd12) ? $signed({10'd0, cj[3:2]}) : (cj < 5'd16) ? 12'sd3 : -12'sd1);
             gpos = $signed({2'b0, rlo}) + (grow <<< 2) + $signed({11'd0, cj[1:0]});
-            cgame[cj] <= vmap(gpos[10:0]); cok[cj] <= grow >= 0 && gpos <= $signed({2'b0, rhi});
-            cj <= (cj == 5'd19) ? 5'd0 : cj + 1'b1;
-            if (cj == 5'd19) c_valid <= 1;
+            cgv <= gpos; gen_addr <= gpos[10:0]; cok_p <= grow >= 0 && gpos <= $signed({2'b0, rhi}); cph <= 3'd2;
         end
-        else if (!cph) begin cgv <= $signed({2'b0, idx}) + cand_off(cj[3:0], last_left); cph <= 1; end
+        else if (cph == 0) begin cgv <= $signed({2'b0, idx}) + cand_off(cj[3:0], last_left); cph <= 3'd1; end
         else if (cgv < $signed({2'b0, rlo})) cgv <= cgv + $signed({2'b0, rcount});
         else if (cgv >= $signed({2'b0, rlo}) + $signed({2'b0, rcount})) cgv <= cgv - $signed({2'b0, rcount});
-        else begin
-            cgame[cj] <= vmap(cgv[10:0]); cok[cj] <= 1; cph <= 0;
-            cj <= (cj == 5'd10) ? 5'd0 : cj + 1'b1;
-            if (cj == 5'd10) c_valid <= 1;
-        end
+        else begin gen_addr <= cgv[10:0]; cok_p <= 1; cph <= 3'd2; end
     end
 end
 wire [10:0] tg_now = (tph < 4) ? cg[tph[1:0]] : cgame[cand];
@@ -573,6 +662,65 @@ wire [2:0]  gnd = (gbcd[15:12] != 0) ? 3'd4 : (gbcd[11:8] != 0) ? 3'd3 : (gbcd[7
 // from the game count's digits otherwise lands on the layout's state)
 reg [7:0] pch = 0;
 always @(posedge clk_74a) pch <= plat_char(pmode, ecode, enum_, lbl_sec, gm_sel, cur_fav, gbcd, gnd, k);
+// ---- the button legend: a context picks up to five hints (a picture, a space, a word), three spaces apart.
+// Contexts: 1 flow All, 2 flow Favorites, 3 grid All, 4 grid Favorites, 5 options, 6 cartridge, 7 the All games cover,
+// 8 no cartridge, 9 settings. The Select hint names the next stop of the ring: 1 FAVORITES, 2 ALL GAMES, 3 CARTRIDGE.
+// Mirrored by tools/legend_model.py; the pictures live in font_sm codes 1 to 14 (tools/make_legend_font.py).
+wire        favs_ok  = fav_count != 0 && idx_ok;
+wire [3:0]  leg_ctx  = !menu_active ? 4'd0 : gm_on ? 4'd5 : cart_view ? (cart_present ? 4'd6 : 4'd8) : vtile ? 4'd7 :
+                       fav_mode ? (grid_pref ? 4'd4 : 4'd2) : (grid_pref ? 4'd3 : 4'd1);
+wire [1:0]  leg_next = cart_view ? (favs_ok ? 2'd1 : 2'd2) : fav_mode ? 2'd2 : (cart_found || slot_ok) ? 2'd3 : favs_ok ? 2'd1 : 2'd0;
+wire        leg_let  = idx_ok && !fav_mode && lcnt > 1;
+wire [6:0]  leg_key  = {leg_ctx, leg_next, leg_let};
+// hint h: 0 Y GRID, 1 Y FLOW, 2 X OPTIONS, 3 A PLAY, 4 Select FAVORITES, 5 Select ALL GAMES, 6 Select CARTRIDGE,
+// 7 L R LETTER, 8 D-pad CHOOSE, 9 A OK, 10 B BACK, 11 A PLAY CART, 12 A ALL GAMES, 13 D-pad SETTING, 14 D-pad CHANGE
+// (15 means no hint). Character j of hint h, 0 past its end.
+function [7:0] hint_char(input [3:0] h, input [5:0] j);
+    reg [111:0] t; reg [3:0] n;
+    begin
+        case (h)
+        0:  begin t = {8'd1, " GRID", 64'd0}; n = 6; end
+        1:  begin t = {8'd1, " FLOW", 64'd0}; n = 6; end
+        2:  begin t = {8'd2, " OPTIONS", 40'd0}; n = 9; end
+        3:  begin t = {8'd3, " PLAY", 64'd0}; n = 6; end
+        4:  begin t = {8'd7, " FAVORITES", 24'd0}; n = 11; end
+        5:  begin t = {8'd7, " ALL GAMES", 24'd0}; n = 11; end
+        6:  begin t = {8'd7, " CARTRIDGE", 24'd0}; n = 11; end
+        7:  begin t = {8'd11, 8'd12, " LETTER", 40'd0}; n = 9; end
+        8:  begin t = {8'd5, " CHOOSE", 48'd0}; n = 8; end
+        9:  begin t = {8'd3, " OK", 80'd0}; n = 4; end
+        10: begin t = {8'd4, " BACK", 64'd0}; n = 6; end
+        11: begin t = {8'd3, " PLAY CART", 24'd0}; n = 11; end
+        12: begin t = {8'd3, " ALL GAMES", 24'd0}; n = 11; end
+        13: begin t = {8'd6, " SETTING", 40'd0}; n = 9; end
+        14: begin t = {8'd5, " CHANGE", 48'd0}; n = 8; end
+        default: begin t = 112'd0; n = 0; end
+        endcase
+        hint_char = (j < n) ? t[111 - j * 8 -: 8] : 8'd0;
+    end
+endfunction
+// the hint in slot sl (0..4) of a context, 15 past the end (the Select hint is 3 + next; none when next is 0)
+function [3:0] leg_hint(input [3:0] ctx, input [1:0] nxt, input lt_, input [2:0] sl);
+    reg [3:0] selh; reg [3:0] h0, h1, h2, h3, h4;
+    begin
+        selh = (nxt == 0) ? 4'd15 : 4'd3 + {2'd0, nxt};
+        h0 = 4'd15; h1 = 4'd15; h2 = 4'd15; h3 = 4'd15; h4 = 4'd15;
+        case (ctx)
+        1, 2, 3, 4: begin
+            h0 = (ctx == 3 || ctx == 4) ? 4'd1 : 4'd0; h1 = 4'd2; h2 = 4'd3;
+            if (selh != 4'd15) begin h3 = selh; h4 = (lt_ && (ctx == 1 || ctx == 3)) ? 4'd7 : 4'd15; end
+            else h3 = (lt_ && (ctx == 1 || ctx == 3)) ? 4'd7 : 4'd15;
+        end
+        5: begin h0 = 4'd8; h1 = 4'd9; h2 = 4'd10; end
+        6: begin h0 = 4'd11; h1 = selh; end
+        7: begin h0 = 4'd12; h1 = 4'd0; h2 = selh; end
+        8: begin h0 = selh; end
+        9: begin h0 = 4'd13; h1 = 4'd14; h2 = 4'd10; end
+        default: ;
+        endcase
+        case (sl) 0: leg_hint = h0; 1: leg_hint = h1; 2: leg_hint = h2; 3: leg_hint = h3; default: leg_hint = h4; endcase
+    end
+endfunction
 always @(posedge clk_74a) begin
     if (gn_i == 0) begin
         if (gn != gn_src) begin gn_src <= gn; gn_sh <= gn; gacc <= 0; gn_i <= 4'd11; end
@@ -604,6 +752,9 @@ always @(posedge clk_74a) begin
     target_dataslot_write    <= 0;
     vt_go                    <= 0;
     g_go                     <= 0;
+    lt_go                    <= 0;
+    zm_go                    <= 0;
+    lstr_we                  <= 0;
     picker_reset             <= 0;
     param_we                 <= 0;
     map_we                   <= 0;
@@ -715,35 +866,39 @@ always @(posedge clk_74a) begin
     S_FV0: begin pfav <= 1; pflags <= 32'd3; psize <= 32'd4096; op_slot <= FAV_SLOT; op_ret <= S_FV1; state <= S_PREAD; end
     S_FV1: begin
         pfav <= 0;
-        if (oerr > 3'd1) state <= S_LOAD;                                  // no path in the pack, or refused
+        fl_ret <= S_LOAD;
+        if (oerr > 3'd1) state <= S_FL0;                                   // no path in the pack, or refused
         else begin
             fav_ok <= 1;
             target_dataslot_id <= FAV_SLOT; target_dataslot_slotoffset <= 32'd0;
-            target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd600; target_dataslot_length <= 32'd128;
+            target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd600; target_dataslot_length <= 32'd256;
             target_dataslot_read <= 1; op_ret <= S_FV2; state <= S_XFER_W;
         end
     end
     S_FV2: begin
-        if (xerr != 0) state <= S_LOAD;
-        else begin sj <= 0; ent_raddr <= 11'd300; state <= S_FV3; end
+        if (xerr != 0) state <= S_FL0;
+        else begin fw <= 0; ent_raddr <= 11'd300; state <= S_FV3; end
     end
-    S_FV3: begin                                     // ent_q = word 300 + sj - 1 (two-cycle read latency)
-        ent_raddr <= ent_raddr + 1'b1; sj <= sj + 1'b1;
-        if (sj == 5'd1 && ent_q != 16'h4146) state <= S_LOAD;              // "FA"
-        if (sj == 5'd2 && ent_q != 16'h3156) state <= S_LOAD;              // "V1"
-        if (sj == 5'd4) fj <= (ent_q > FN) ? FN[3:0] : ent_q[3:0];         // n (word 303)
-        if (sj >= 5'd5) begin : rec                                        // records from word 304, 4 words each
-            reg [4:0] w; reg [3:0] r;
-            w = sj - 5'd5; r = w[4:2];
+    S_FV3: begin                                     // ent_q = word 300 + fw - 1 (two-cycle read latency)
+        ent_raddr <= ent_raddr + 1'b1; fw <= fw + 1'b1;
+        if (fw == 7'd1 && ent_q != 16'h4146) state <= S_FL0;                    // "FA"
+        if (fw == 7'd2 && ent_q != 16'h3156 && ent_q != 16'h3256) state <= S_FL0; // "V1" or "V2"
+        if (fw == 7'd2) fv_v2 <= ent_q == 16'h3256;
+        if (fw == 7'd4) fj <= (ent_q > FN) ? FN[3:0] : ent_q[3:0];              // n (word 303)
+        if (fw >= 7'd5) begin : rec                                             // records from word 304: 4 or 8 words
+            reg [6:0] w; reg [3:0] r; reg [2:0] f;
+            w = fw - 7'd5; r = fv_v2 ? w[6:3] : w[6:2]; f = fv_v2 ? w[2:0] : {1'b0, w[1:0]};
             if (r < fj && r < FN) begin
-                case (w[1:0])
+                case (f)
                 0: fv_crc[r][15:0]  <= ent_q;
                 1: fv_crc[r][31:16] <= ent_q;
-                2: begin fv_st[r] <= ent_q[0]; fv_n <= r + 1'b1; end
+                2: begin fv_st[r] <= ent_q[0]; fv_n <= r + 1'b1; fv_fp[r] <= 11'h7FF; fv_ap[r] <= 0; end
+                4: fv_fp[r] <= ent_q[10:0];
+                5: fv_ap[r] <= ent_q[10:0];
                 default: ;
                 endcase
             end
-            if (w == 5'd31 || r >= fj) state <= S_LOAD;
+            if (w == 7'd124 || r >= fj) state <= S_FL0;
         end
     end
     // ---- write favorites.cfg from fv_* (served at FAV_ADDR), then back to the options menu
@@ -757,7 +912,7 @@ always @(posedge clk_74a) begin
         else begin
             target_dataslot_id <= FAV_SLOT; target_dataslot_slotoffset <= 32'd0;
             target_dataslot_bridgeaddr <= FAV_ADDR; target_dataslot_length <= 32'd4096;
-            target_dataslot_write <= 1; op_ret <= S_GMA; state <= S_XFER_W;
+            fl_ret <= S_GMA; target_dataslot_write <= 1; op_ret <= live ? S_FL0 : S_GMA; state <= S_XFER_W;
         end
     end
     // ---- options menu (X): Left/Right choose, A confirms, B or X closes. The platform line shows the option.
@@ -772,14 +927,15 @@ always @(posedge clk_74a) begin
         end else if (pend_a) begin
             pend_a <= 0;
             case (gm_sel)
-            0: begin gm_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
+            0: begin gm_on <= 0; level_target <= 0; zm_go <= 1; zm_in <= 1; state <= S_LAUNCH_FADE; end
             1: begin pk <= PK_SUS; pflags <= 32'd2; psize <= 0; op_slot <= SUS_SLOT; op_ret <= S_GMF; state <= S_PREAD; end
             2: begin                                 // record the change; the newest record for a CRC wins
                 if (fv_n == FN) begin : shift
                     integer si2;
-                    for (si2 = 0; si2 < FN - 1; si2 = si2 + 1) begin fv_crc[si2] <= fv_crc[si2 + 1]; fv_st[si2] <= fv_st[si2 + 1]; end
-                    fv_crc[FN - 1] <= cur_crc; fv_st[FN - 1] <= !cur_fav;
-                end else begin fv_crc[fv_n] <= cur_crc; fv_st[fv_n] <= !cur_fav; fv_n <= fv_n + 1'b1; end
+                    for (si2 = 0; si2 < FN - 1; si2 = si2 + 1) begin fv_crc[si2] <= fv_crc[si2 + 1]; fv_st[si2] <= fv_st[si2 + 1]; fv_fp[si2] <= fv_fp[si2 + 1]; fv_ap[si2] <= fv_ap[si2 + 1]; end
+                    fv_crc[FN - 1] <= cur_crc; fv_st[FN - 1] <= !cur_fav; fv_fp[FN - 1] <= cur_fp; fv_ap[FN - 1] <= cur_ap;
+                end else begin fv_crc[fv_n] <= cur_crc; fv_st[fv_n] <= !cur_fav; fv_fp[fv_n] <= cur_fp; fv_ap[fv_n] <= cur_ap; fv_n <= fv_n + 1'b1; end
+                fl_lift <= live && fav_mode && cur_fav;   // unstarring in Favorites: the cover leaves the list
                 state <= S_FW0;
             end
             default: begin gm_on <= 0; state <= S_GMA; end
@@ -787,7 +943,13 @@ always @(posedge clk_74a) begin
         end else if (press_b || pend_x) begin pend_x <= 0; pend_b <= 0; gm_on <= 0; state <= S_GMA; end
         if (pend_u || pend_d || pend_s) begin pend_u <= 0; pend_d <= 0; pend_s <= 0; end
     end
-    S_GMF: begin cur_susp <= 0; gm_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end   // emptied: boot fresh
+    S_GMF: begin cur_susp <= 0; gm_on <= 0; level_target <= 0; zm_go <= 1; zm_in <= 1; state <= S_LAUNCH_FADE; end   // emptied: boot fresh
+    // ---- a favorite changed: rebuild the live list; an unstarred favorite lifts out of Favorites mode
+    S_FL0: begin fl_req <= ~fl_req; state <= S_FL1; if (fl_lift) begin lt_go <= 1; gm_on <= 0; end end
+    S_FL1: if (fl_valid) begin
+        if (fl_lift) begin fl_lift <= 0; if (idx > lfav_n) idx <= lfav_n; lerr <= 0; tl_target <= 0; state <= S_FADE; end
+        else state <= fl_ret;
+    end
     // ---- Play Cartridge: read the header, look it up in the pack, show the cover or boot the cart at once
     S_CP0: begin cprobe_req <= ~cprobe_req; tmr <= 0; state <= S_CP1; end
     S_CP1: begin
@@ -825,18 +987,18 @@ always @(posedge clk_74a) begin
         if (sj == 5'd5) begin fp_cnt <= (ent_q > count) ? count : ent_q[10:0]; fp_ck <= 0; m_ex <= 0; m_ti <= 0; state <= S_CP5; end
     end
     S_CP5: if (fp_ck >= fp_cnt) state <= S_CPD;       // searched everything
-           else begin                                // the next 256 records (8 bytes each) into words 1024..2047
-               fp_n <= (fp_cnt - fp_ck > 11'd256) ? 11'd256 : fp_cnt - fp_ck;
+           else begin                                // the next 64 records (8 bytes each) into words 600..855
+               fp_n <= (fp_cnt - fp_ck > 11'd64) ? 11'd64 : fp_cnt - fp_ck;
                target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= fp_off + {18'd0, fp_ck, 3'b000};
-               target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd2048;
-               target_dataslot_length <= ((fp_cnt - fp_ck > 11'd256) ? 32'd2048 : {18'd0, fp_cnt - fp_ck, 3'b000});
+               target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd1200;
+               target_dataslot_length <= ((fp_cnt - fp_ck > 11'd64) ? 32'd512 : {18'd0, fp_cnt - fp_ck, 3'b000});
                target_dataslot_read <= 1; op_ret <= S_CP6; state <= S_XFER_W;
            end
-    S_CP6: if (xerr != 0) state <= cp_none; else begin fp_j <= 0; ent_raddr <= 11'd1024; state <= S_CP7; end
-    // record fp_j is words 1024 + 4j: {0x14F, 0x14E}, {0x143, 0x14D}, title CRC low, title CRC high
-    S_CP7:  begin ent_raddr <= 11'd1025 + {fp_j[8:0], 2'b00}; state <= S_CP8; end
-    S_CP8:  begin fp_w0 <= ent_q; ent_raddr <= 11'd1026 + {fp_j[8:0], 2'b00}; state <= S_CP9; end
-    S_CP9:  begin fp_w1 <= ent_q; ent_raddr <= 11'd1027 + {fp_j[8:0], 2'b00}; state <= S_CP10; end
+    S_CP6: if (xerr != 0) state <= cp_none; else begin fp_j <= 0; ent_raddr <= 11'd600; state <= S_CP7; end
+    // record fp_j is words 600 + 4j: {0x14F, 0x14E}, {0x143, 0x14D}, title CRC low, title CRC high
+    S_CP7:  begin ent_raddr <= 11'd601 + {fp_j[8:0], 2'b00}; state <= S_CP8; end
+    S_CP8:  begin fp_w0 <= ent_q; ent_raddr <= 11'd602 + {fp_j[8:0], 2'b00}; state <= S_CP9; end
+    S_CP9:  begin fp_w1 <= ent_q; ent_raddr <= 11'd603 + {fp_j[8:0], 2'b00}; state <= S_CP10; end
     S_CP10: begin fp_w2 <= ent_q; state <= S_CP11; end
     S_CP11: begin
         if (!m_ex && fp_w0 == {cart_hdr[27*8 +: 8], cart_hdr[26*8 +: 8]} && fp_w1[7:0] == cart_hdr[25*8 +: 8]) begin
@@ -844,16 +1006,16 @@ always @(posedge clk_74a) begin
         end
         if (!m_ti && {ent_q, fp_w2} == tcrc) begin m_ti <= 1; m_tii <= fp_ck + fp_j; end   // same title, any revision
         if (fp_j + 1'b1 == fp_n) begin fp_ck <= fp_ck + fp_n; state <= S_CP5; end
-        else begin fp_j <= fp_j + 1'b1; ent_raddr <= 11'd1024 + {fp_j[8:0] + 9'd1, 2'b00}; state <= S_CP7; end
+        else begin fp_j <= fp_j + 1'b1; ent_raddr <= 11'd600 + {fp_j[8:0] + 9'd1, 2'b00}; state <= S_CP7; end
     end
     S_CPD: if (m_ex || m_ti) begin cart_unk <= 0; cart_bad <= 0; cart_idx <= m_ex ? m_exi : m_tii; state <= S_CPM; end
            else if (crt_ok && crt_off != 0 && count < 11'd2045) begin  // not in the pack: a default cartridge image
                cart_unk <= 1; cart_bad <= !title_ascii(cart_hdr); cart_type <= ctype(cart_hdr); cart_idx <= count + ctype(cart_hdr);
                state <= S_CPM;
            end else state <= cp_none;
-    S_CPM: begin                                     // show the cart: it drops in over the list
-        if (!cart_view) begin lidx <= idx; lmode <= fav_mode; end
-        idx <= cart_idx; cart_found <= 1; cart_view <= 1; fav_mode <= 0; lbl_on <= 0; rp <= 0; tl_target <= 0;
+    S_CPM: begin                                     // show the cart: it drops in over the list (or the empty slot)
+        if (!cart_view) begin lidx <= idx; lmode <= fav_mode; if (fav_mode) fidx <= idx; else aidx <= idx; end
+        idx <= cart_idx; cart_found <= 1; cart_view <= 1; cart_none <= 0; fav_mode <= 0; lbl_on <= 0; rp <= 0; tl_target <= 0;
         vt_go <= 1; vt_in <= 1; vt_fx <= 1;
         cl_ret <= S_FADE; state <= (cart_unk && !cart_bad && crl_ok && cart_hdr != crl_last) ? S_CL0 : S_FADE;
     end
@@ -905,7 +1067,7 @@ always @(posedge clk_74a) begin
             cart_view <= 0; cart_mode <= 1; menu_active <= 0; game_loaded <= 1; picker_reset <= 1; hold_gb <= 0; state <= S_CRUN;
         end
     end
-    S_CRUN: ;                                        // playing the cart (its save is on the cart: no pause panel)
+    S_CRUN: if (press_l) begin pause_gb <= 1; psel <= 0; pmsg <= 0; ovl <= 1; snd_open <= ~snd_open; state <= S_PAUSE; end   // playing the cart: L pauses
     // ---- jump: the nearest section start after idx (down) or before it (up), wrapping around the list
     S_JMP0: begin sj <= 0; jhave <= 0; jwhave <= 0; state <= S_JMP1; end
     S_JMP1: begin
@@ -963,8 +1125,9 @@ always @(posedge clk_74a) begin
     // ---- load the selection: read its entry, probe its suspend file once, lay out the title and platform
     S_LOAD: if (!cart_checked) begin cart_checked <= 1; state <= S_CP0; end
     else if (vsel || vtile) state <= S_VLOAD;
+    else if (!g_cur_ok) ;                            // the game at the selection is still being looked up
     else begin
-        target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= ENT_OFF + {14'd0, idx, 7'd0};
+        target_dataslot_id <= COVER_SLOT; target_dataslot_slotoffset <= ENT_OFF + {14'd0, cur_g, 7'd0};
         target_dataslot_bridgeaddr <= BRIDGE_PACK + 32'd16; target_dataslot_length <= 32'd128;
         target_dataslot_read <= 1; state <= S_LOADE;
     end
@@ -972,10 +1135,12 @@ always @(posedge clk_74a) begin
     S_LC1: begin ent_raddr <= ebase + 11'd25; state <= S_LC2; end
     S_LC2: begin cur_crc[15:0] <= ent_q; ent_raddr <= ebase + 11'd20; state <= S_LC3; end
     S_LC3: begin cur_crc[31:16] <= ent_q; ent_raddr <= ebase + 11'd21; state <= S_LC4; end
-    S_LC4: begin cur_favp <= ent_q[1] && pver >= 16'd7; state <= S_LC5; end
-    S_LC5: begin cur_acc <= (pver >= 16'd7 && ent_q != 0) ? ent_q : ACC_DEFAULT; state <= S_LOADK; end   // word 21
+    S_LC4: begin cur_favp <= ent_q[1] && pver >= 16'd7; ent_raddr <= ebase + 11'd62; state <= S_LC5; end
+    S_LC5: begin cur_acc <= (pver >= 16'd7 && ent_q != 0) ? ent_q : ACC_DEFAULT; ent_raddr <= ebase + 11'd63; state <= S_LC6; end   // word 21
+    S_LC6: begin cur_fp <= live ? ent_q[10:0] : 11'h7FF; state <= S_LC7; end                // word 62: favorites position
+    S_LC7: begin cur_ap <= live ? ent_q[10:0] : idx; state <= S_LOADK; end                 // word 63: A to Z position
     S_VLOAD: begin                                   // a cart the pack doesn't know: title from its header
-        cur_known <= !vtile; cur_susp <= 0; cur_crc <= 0; cur_favp <= 0; cur_acc <= crt_acc[cart_type];
+        cur_known <= !vtile && !cart_none; cur_susp <= 0; cur_crc <= 0; cur_favp <= 0; cur_acc <= cart_none ? 16'd0 : crt_acc[cart_type];
         state <= S_LOAD2;
     end
     S_LOADK: begin
@@ -990,23 +1155,52 @@ always @(posedge clk_74a) begin
                   target_dataslot_read <= 1; op_ret <= S_PROBE2; state <= S_XFER_W;
               end
     S_PROBE2: begin cur_known <= 1; cur_susp <= (xerr == 0); ent_raddr <= ebase + 11'd20; state <= S_LOAD2; end
-    S_LOAD2: begin
-        k <= 0; line2 <= 0; lf <= 1; mp <= 10'd0; state <= S_MAP_FETCH;
-        ent_raddr <= ebase + 11'd20; // flags byte (byte 40) for the platform line
+    S_LOAD2: begin                                   // build the legend string, then lay out the three lines
+        lonly <= 0; lb_h <= 0; lb_j <= 0; lb_g <= 0; lb_n <= 0; leg_built <= leg_key; state <= S_LB1;
+    end
+    S_LB0: begin                                     // the string is built: lay out everything, or line 3 only
+        if (lonly) begin k <= 0; line2 <= 1; line3 <= 1; lf <= 1; mp <= 11'd1024; state <= S_MAP_FETCH; end
+        else begin
+            k <= 0; line2 <= 0; line3 <= 0; lf <= 1; mp <= 11'd0; state <= S_MAP_FETCH;
+            ent_raddr <= ebase + 11'd20; // flags byte (byte 40) for the platform line
+        end
+    end
+    S_LB1: begin : build                             // one character of the legend string per cycle
+        reg [3:0] h, hn; reg [7:0] c;
+        h = leg_hint(leg_built[6:3], leg_built[2:1], leg_built[0], lb_h);
+        hn = leg_hint(leg_built[6:3], leg_built[2:1], leg_built[0], lb_h + 3'd1);
+        c = (h == 4'd15) ? 8'd0 : hint_char(h, lb_j);
+        lstr_wa <= lb_n;                             // every write lands at the string's current length
+        if (lb_g != 0) begin                         // the three spaces between hints
+            lstr_we <= 1; lstr_wd <= 6'd27; lb_n <= lb_n + 1'b1; lb_g <= lb_g - 1'b1;
+            if (lb_g == 2'd1) begin lb_h <= lb_h + 1'b1; lb_j <= 0; end
+        end else if (h == 4'd15 || lb_h == 3'd5 || lb_n == 6'd62) begin   // the end: a terminator
+            lstr_we <= 1; lstr_wd <= 6'd0; state <= S_LB0;
+        end else if (c == 8'd0) begin                // this hint ended: a gap if another follows, else the end
+            if (hn == 4'd15 || lb_h == 3'd4) begin lstr_we <= 1; lstr_wd <= 6'd0; state <= S_LB0; end
+            else lb_g <= 2'd3;
+        end else begin
+            lstr_we <= 1; lstr_wd <= leg_code(c); lb_n <= lb_n + 1'b1; lb_j <= lb_j + 1'b1;
+        end
     end
     S_MAP_FETCH: begin
-        if (line2) state <= S_MAP_CHAR;
+        if (line3) begin lstr_ra <= k; state <= S_MAP_WAIT; end
+        else if (line2) state <= S_MAP_CHAR;
         else begin ent_raddr <= ebase + k[5:1]; state <= S_MAP_WAIT; end
-        if (k == 0 && !line2 && lf) is_gb <= vsel ? !cart_hdr[15 * 8 + 7] : ent_q[0];   // ent_q holds word 20 here (set in S_LOAD2)
+        if (k == 0 && !line2 && lf) is_gb <= vsel ? !cart_hdr[15 * 8 + 7] : ent_q[0];   // ent_q holds word 20 here (set in S_LB0)
     end
     S_MAP_WAIT:  state <= S_MAP_WAIT2;
-    S_MAP_WAIT2: state <= S_MAP_CHAR;
+    S_MAP_WAIT2: state <= S_MAP_WAIT3;
+    S_MAP_WAIT3: begin                               // the character, registered: its mux is long and the width lookup follows
+        chr <= line3 ? {2'b0, lstr_q} : cart_none ? none_char(k) : vsel ? (cart_bad ? bad_char(k) : hdr_char(cart_hdr, k)) :
+               vtile ? tile_char(k) :
+               (k[0] ? ent_q[15:8] : ent_q[7:0]);
+        state <= S_MAP_CHAR;
+    end
     S_MAP_CHAR: begin
-        ch = line2 ? pch : vsel ? (cart_bad ? bad_char(k) : hdr_char(cart_hdr, k)) :
-             vtile ? tile_char(k) :
-             (k[0] ? ent_q[15:8] : ent_q[7:0]);
-        gw = lf ? wrom2[ch[6:0]] : wrom[ch[6:0]];
-        if (ch == 0 || k == (line2 ? 6'd24 : 6'd40) || (lf ? mp[8:0] >= 9'd500 : mp[7:0] >= 8'd250)) state <= S_MAP_DONE;
+        ch = (line2 && !line3) ? pch : chr;
+        gw = line3 ? wrom3[ch[5:0]] : lf ? wrom2[ch[6:0]] : wrom[ch[6:0]];
+        if (ch == 0 || k == (line3 ? 6'd63 : line2 ? 6'd24 : 6'd40) || (line3 ? mp >= 11'd1332 : lf ? mp[8:0] >= 9'd500 : mp[7:0] >= 8'd250)) state <= S_MAP_DONE;
         else if (gw == 0) begin k <= k + 1'b1; state <= S_MAP_FETCH; end
         else begin col <= 0; state <= S_MAP_COL; end
     end
@@ -1023,13 +1217,16 @@ always @(posedge clk_74a) begin
         mp <= mp + 1'b1; k <= k + 1'b1; state <= S_MAP_FETCH;
     end
     S_MAP_DONE: begin
-        if (lf && !line2) begin htw <= mp[8:0]; line2 <= 1; k <= 0; mp <= 10'd512; state <= S_MAP_FETCH; end
-        else if (lf) begin hsw <= mp[8:0]; lf <= 0; line2 <= 0; k <= 0; mp <= 10'd0; state <= S_MAP_FETCH; end
+        if (lf && !line2) begin htw <= mp[8:0]; line2 <= 1; k <= 0; mp <= 11'd512; state <= S_MAP_FETCH; end
+        else if (lf && !line3) begin hsw <= mp[8:0]; line3 <= 1; k <= 0; mp <= 11'd1024; state <= S_MAP_FETCH; end
+        else if (lf && lonly) begin lgw <= mp[8:0]; line3 <= 0; line2 <= 0; lf <= 0; lonly <= 0; state <= S_MENU; end
+        else if (lf) begin lgw <= mp[8:0]; lf <= 0; line2 <= 0; line3 <= 0; k <= 0; mp <= 11'd0; state <= S_MAP_FETCH; end
         else begin
             title_w <= (mp[7:0] == 0) ? 8'd0 : mp[7:0] - 1'b1;   // drop the trailing gap
             if (!menu_active) lflush_req <= 1;          // fresh menu (boot or Home): write the log once it is idle
             if (!menu_active) begin pend_l <= 0; pend_r <= 0; pend_a <= 0; pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_s <= 0; pend_y <= 0; pend_b <= 0; pend_jl <= 0; pend_jr <= 0; end   // presses from before the menu showed
             gen <= ~gen; menu_active <= 1; level_target <= 4'd8; state <= gm_on ? S_GM : S_MENU;
+            if (zm_home) begin zm_home <= 0; zm_go <= 1; zm_in <= 0; end   // back from a game: the cover shrinks into place
             tl_target <= vt_txt ? 4'd0 : 4'd8; tl_hold <= vt_txt;   // after a cartridge transition lands
         end
     end
@@ -1041,16 +1238,22 @@ always @(posedge clk_74a) begin
             if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
         end else if (cart_view) begin
             pend_u <= 0; pend_d <= 0; pend_x <= 0; pend_y <= 0; pend_b <= 0; pend_jl <= 0; pend_jr <= 0;
-            if (pend_a) begin pend_a <= 0; state <= S_CRUN0; end
-            else if (pend_l || pend_r || (pend_s && !cart_play)) begin   // to the list (Select: the ring goes on to All)
-                pend_l <= 0; pend_r <= 0; pend_s <= 0; cart_view <= 0; fav_mode <= lmode; idx <= (lidx < lcnt) ? lidx : 11'd0;
-                lbl_on <= 1; lbl_sec <= 5'd28; lerr <= 0; tl_target <= 0; vt_go <= 1; vt_in <= 0; vt_fx <= 0; state <= S_FADE;
+            if (pend_a && cart_none) pend_a <= 0;
+            else if (pend_a) begin pend_a <= 0; state <= S_CRUN0; end
+            else if (pend_l || pend_r || (pend_s && !cart_play)) begin   // to the list (Select: the ring goes on to Favorites)
+                pend_l <= 0; pend_r <= 0; pend_s <= 0; cart_view <= 0; cart_none <= 0;
+                if (pend_s && favs_ok) begin fav_mode <= 1; idx <= (fidx <= fav_count) ? fidx : 11'd0; lbl_sec <= 5'd0; end
+                else if (pend_s) begin fav_mode <= 0; idx <= (aidx < lcnt) ? aidx : fav_count; lbl_sec <= 5'd28; end
+                else begin fav_mode <= lmode; idx <= (lidx < lcnt) ? lidx : 11'd0; lbl_sec <= lmode ? 5'd0 : 5'd28; end
+                lbl_on <= 1; lerr <= 0; tl_target <= 0; vt_go <= 1; vt_in <= 0; vt_fx <= 0; state <= S_FADE;
                 if (grid) begin g_go <= 1; g_kind <= 0; end
             end
             else if (lflush_req && mt >= 28'd222_000_000) begin
                 lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
             end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
             else if (rp_tmr >= 28'd74_000_000) begin rp_tmr <= 0; rp <= 1; state <= S_CP0; end
+        end else if (leg_key != leg_built && !anim) begin   // the legend's context changed: rebuild its line
+            lonly <= 1; lb_h <= 0; lb_j <= 0; lb_g <= 0; lb_n <= 0; leg_built <= leg_key; state <= S_LB1;
         end else if (g_anim) begin                   // the grid is moving: presses wait (covers still arrive)
             if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
         end else if (!anim && pend_y && !vt_busy && lcnt != 0) begin          // Y: grid on / off
@@ -1061,11 +1264,11 @@ always @(posedge clk_74a) begin
             pend_r <= 0; pend_l <= 0; idx <= pend_r ? next : prev; last_left <= !pend_r; lerr <= 0; lbl_on <= 0; tl_target <= 0;
             g_go <= 1; g_kind <= 0; state <= S_FADE;
         end else if (grid && (pend_u || pend_d)) begin : grid_ud            // grid: a row up / down, stopping at the ends
-            reg [10:0] gp, gt; reg ok;
-            gp = idx - rlo; ok = 0; gt = idx;
-            if (pend_d && gp + 11'd4 < rcount) begin gt = idx + 11'd4; ok = 1; end
-            else if (pend_d && (gp | 11'd3) + 11'd1 < rcount) begin gt = rhi; ok = 1; end   // a shorter last row
-            else if (pend_u && gp >= 11'd4) begin gt = idx - 11'd4; ok = 1; end
+            reg [10:0] gt; reg ok;
+            ok = 0; gt = idx;
+            if (pend_d && gd_full) begin gt = idx + 11'd4; ok = 1; end
+            else if (pend_d && gd_last) begin gt = rhi; ok = 1; end   // a shorter last row
+            else if (pend_u && gu_ok) begin gt = idx - 11'd4; ok = 1; end
             pend_u <= 0; pend_d <= 0;
             if (ok) begin idx <= gt; last_left <= pend_u; lerr <= 0; lbl_on <= 0; tl_target <= 0; g_go <= 1; g_kind <= 0; state <= S_FADE; end
         end else if (!grid && !anim && pend_r && lcnt > 1) begin
@@ -1074,36 +1277,39 @@ always @(posedge clk_74a) begin
             pend_l <= 0; idx <= prev; last_left <= 1; lerr <= 0; lbl_on <= 0; ago <= 1; ago_dir <= 1; tl_target <= 0; state <= S_FADE;
         end else if (!anim && pend_x && pver >= 16'd7 && cur_known) begin
             pend_x <= 0; gm_on <= 1; gm_sel <= 0; lbl_on <= 0; state <= S_GMA;
-        end else if (!anim && pend_s && ((fav_count != 0 && idx_ok) || cart_found)) begin
+        end else if (!anim && pend_s && ((fav_count != 0 && idx_ok) || cart_found || slot_ok)) begin
             pend_s <= 0; lerr <= 0; tl_target <= 0; state <= S_FADE;
-            if (!fav_mode && fav_count != 0 && idx_ok) begin           // All -> Favorites
+            if (!fav_mode && cart_found) begin                         // All -> Cartridge
+                fav_mode <= 0; lbl_on <= 0; cart_view <= 1; lidx <= idx; lmode <= 0; aidx <= idx; idx <= cart_idx;
+                vt_go <= 1; vt_in <= 1; vt_fx <= 0;
+            end else if (!fav_mode && slot_ok) begin                   // All -> the empty slot
+                fav_mode <= 0; lbl_on <= 0; cart_view <= 1; cart_none <= 1; lidx <= idx; lmode <= 0; aidx <= idx; idx <= count + 11'd3;
+                vt_go <= 1; vt_in <= 1; vt_fx <= 0;
+            end else if (!fav_mode) begin                              // All -> Favorites (no cartridge)
                 fav_mode <= 1; lbl_on <= 1; lbl_sec <= 5'd0; aidx <= idx; idx <= fidx;
                 if (grid) begin g_go <= 1; g_kind <= 0; end
-            end else if (cart_found) begin                             // -> Cartridge
-                fav_mode <= 0; lbl_on <= 0; cart_view <= 1; lidx <= idx; lmode <= fav_mode; idx <= cart_idx;
-                vt_go <= 1; vt_in <= 1; vt_fx <= 0;
             end else begin                                             // Favorites -> All
                 fav_mode <= 0; lbl_on <= 1; lbl_sec <= 5'd28; fidx <= vtile ? 11'd0 : idx; idx <= aidx;
                 if (grid) begin g_go <= 1; g_kind <= 0; end
             end
-        end else if (!anim && (pend_u || pend_d || pend_jl || pend_jr) && idx_ok && !fav_mode && lcnt > 1) begin
-            jup <= pend_u | pend_jl; pend_u <= 0; pend_d <= 0; pend_jl <= 0; pend_jr <= 0; state <= S_JMP0;
+        end else if (!anim && (pend_jl || pend_jr) && idx_ok && !fav_mode && lcnt > 1) begin   // L / R: letter jumps
+            jup <= pend_jl; pend_jl <= 0; pend_jr <= 0; state <= S_JMP0;
         end else if (pend_a && vtile) begin                           // All games: to the A to Z list
             pend_a <= 0; fidx <= 11'd0; fav_mode <= 0; idx <= aidx; lbl_on <= 1; lbl_sec <= 5'd28; lerr <= 0; tl_target <= 0;
             if (grid) begin g_go <= 1; g_kind <= 0; end
             state <= S_FADE;
-        end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; lbl_on <= 0; level_target <= 0; state <= S_LAUNCH_FADE; end
+        end else if (pend_a) begin pend_a <= 0; pend_l <= 0; pend_r <= 0; pend_u <= 0; pend_d <= 0; lbl_on <= 0; level_target <= 0; zm_go <= 1; zm_in <= 1; state <= S_LAUNCH_FADE; end
         else if (lflush_req && mt >= 28'd222_000_000) begin   // 3 s idle: write the debug log to its file
             lflush_req <= 0; plog <= 1; pflags <= 32'd3; psize <= {19'd0, LOG_BYTES}; op_slot <= LOG_SLOT; op_ret <= S_LG2; state <= S_PREAD;
         end else if (need_ok) begin af_ret <= S_MENU; state <= S_AF0; end
         else if (rp_tmr >= 28'd74_000_000 && !anim && !pend_l && !pend_r && !pend_a && !pend_x && !pend_s) begin
             rp_tmr <= 0; rp <= 1; state <= S_CP0;                              // live cart check (read only)
         end
-        if ((lcnt <= 1 || !idx_ok || fav_mode) && !grid) begin pend_u <= 0; pend_d <= 0; end
+        if (!grid) begin pend_u <= 0; pend_d <= 0; end            // Up and Down only mean something in the grid
         if (lcnt <= 1 || !idx_ok || fav_mode) begin pend_jl <= 0; pend_jr <= 0; end
         if (!grid) pend_b <= 0;
         if (lcnt == 0 || vt_busy) pend_y <= 0;
-        if ((fav_count == 0 || !idx_ok) && !cart_found) pend_s <= 0;
+        if ((fav_count == 0 || !idx_ok) && !cart_found && !slot_ok) pend_s <= 0;
         if (pver < 16'd7) pend_x <= 0;
         if (lcnt <= 1) begin pend_l <= 0; pend_r <= 0; end
     end
@@ -1204,9 +1410,13 @@ always @(posedge clk_74a) begin
     S_RUN: if (press_l) begin pause_gb <= 1; psel <= 0; pmsg <= 0; ovl <= 1; snd_open <= ~snd_open; state <= S_PAUSE; end
     S_PAUSE: begin
         if (press_up || press_dn) begin psel <= ~psel; pmsg <= 0; end
-        else if (press_a && !psel) begin pause_gb <= 0; ovl <= 0; snd_close <= ~snd_close; state <= S_RUN; end
+        else if (press_a && !psel) begin pause_gb <= 0; ovl <= 0; snd_close <= ~snd_close; state <= cart_mode ? S_CRUN : S_RUN; end
+        else if (press_a && psel && cart_mode) begin   // Home from a cart: its save is on the cart; back to its cover
+            ovl <= 0; pmsg <= 0; pause_gb <= 0; hold_gb <= 1; cart_mode <= 0; game_loaded <= 0; level_target <= 0;
+            cart_view <= 1; vt_go <= 1; vt_in <= 1; vt_fx <= 0; state <= S_LOAD;
+        end
         else if (press_a && psel) begin pmsg <= 2'd1; state <= S_H0; end
-        else if (press_b || press_l) begin pause_gb <= 0; ovl <= 0; snd_close <= ~snd_close; state <= S_RUN; end
+        else if (press_b || press_l) begin pause_gb <= 0; ovl <= 0; snd_close <= ~snd_close; state <= cart_mode ? S_CRUN : S_RUN; end
     end
     // ---- Home: write the .sav, write a save state into the .sus, back to the menu
     S_H0: if (sv != 0) begin pk <= PK_SAV; pflags <= 0; psize <= 0; op_slot <= SAVE_SLOT; op_ret <= S_H1; state <= S_PREAD; end
@@ -1234,7 +1444,7 @@ always @(posedge clk_74a) begin
     S_H6: if (xerr != 0) begin ecode <= "V"; enum_ <= xerr; pmsg <= 2'd2; state <= S_PAUSE; end
           else begin
               cur_susp <= 1; cur_known <= 1; ovl <= 0; pmsg <= 0; pause_gb <= 0; hold_gb <= 1;
-              game_loaded <= 0; level_target <= 0; state <= S_LOAD;
+              game_loaded <= 0; level_target <= 0; zm_home <= 1; state <= S_LOAD;
           end
     S_OFF: begin menu_active <= 0; hold_gb <= 0; end
     default: state <= S_BOOT;
@@ -1247,7 +1457,7 @@ end
 // Up to four covers are visible at once; they never overlap, so each screen column belongs to at most one.
 localparam AN = 8;
 always @(posedge clk_74a) begin
-    if (ago) begin anim <= 1; af <= 0; adir <= ago_dir; end
+    if (ago || ago_lt) begin anim <= 1; af <= 0; adir <= ago ? ago_dir : 1'b0; end
     else if (frame_tick && anim) begin if (af == AN - 1) anim <= 0; else af <= af + 1'b1; end
     if (frame_tick) begin
         if (tlevel < tl_target) tlevel <= (tlevel + 2'd2 > tl_target) ? tl_target : tlevel + 2'd2;
@@ -1273,7 +1483,8 @@ reg [9:0] step_lut [0:255];
 integer si;
 initial for (si = 0; si < 256; si = si + 1) step_lut[si] = (si == 0) ? 10'd256 : (si <= 80) ? (80 * 256) / si : (128 * 256) / si;
 
-wire [8:0] e_now = anim ? ease(af) : 9'd256;
+reg  [8:0] e_now = 9'd256;
+always @(posedge clk_74a) e_now <= anim ? ease(af) : 9'd256;
 
 // ---------------------------------------------------------------- cartridge transitions (clk_74a)
 // The cartridge sits above the list. A cart going in (or Select to it) pushes the list down out of view while the
@@ -1316,6 +1527,16 @@ localparam signed [10:0] D = 11'sd256;
 // cover k (0..3, left to right) parameters, set in the block after this one
 reg  signed [10:0] cx [0:3]; reg [7:0] cs [0:3]; reg [4:0] cb [0:3]; reg cv [0:3];
 reg         vt = 0, vt_arm = 0, vt_dir = 0, vt_fxr = 0;   // moving; waiting for the arriving art; 1: in; effects
+reg         lt = 0, pin0 = 0; reg [2:0] ltf = 0; reg ago_lt = 0;   // the lift: shrinking the old centre; then a step with cover 0 pinned
+reg         zm = 0, zdir = 0; reg [3:0] zf = 0;    // the zoom: 12 frames, the selected cover between its rest size and 240 px
+reg  signed [10:0] zx0 = 0, zt0 = 0; reg [7:0] zs0 = 0;   // its rest geometry (x, top, size)
+reg  [8:0]  zk_r = 0; reg [16:0] zd_r = 0; reg [7:0] zs_r = 0; reg signed [10:0] zx_r = 0, zy_r = 0;   // the zoom, pipelined
+reg  [7:0]  lts = 0; reg [4:0] ltb = 0;            // the lifting cover's size and brightness this frame
+localparam [7:0] ZS = 8'd240;
+localparam [2:0] LT_N = 7;
+function [8:0] lift_k(input [2:0] i);                // 256 .. 0 over 8 frames, ease out (1 - (1-t)^3 reversed)
+    case (i) 0: lift_k = 171; 1: lift_k = 109; 2: lift_k = 64; 3: lift_k = 34; 4: lift_k = 15; 5: lift_k = 5; 6: lift_k = 1; default: lift_k = 0; endcase
+endfunction
 reg  [5:0]  vf = 0, vt_wait = 0; reg vt_rdy = 0;
 reg  signed [10:0] gx [0:3]; reg [7:0] gs [0:3]; reg [4:0] gb [0:3]; reg [10:0] gg [0:3]; reg gv [0:3], gk [0:3];
 reg  signed [10:0] cy [0:3]; reg ck [0:3];             // per cover: vertical offset, transparent black (default image)
@@ -1330,6 +1551,36 @@ wire signed [10:0] um = !vt ? 11'sd0 : vt_dir ? u_in_f(vf) : u_out_f(vf);
 wire signed [10:0] ul = (!vt || vfl == 6'd63) ? 11'sd0 : vt_dir ? u_in_f(vfl) : u_out_f(vfl);
 integer gi;
 always @(posedge clk_74a) begin
+    ago_lt <= 0;
+    if (lt_go) begin
+        lt <= 1; ltf <= 0;
+        for (gi = 0; gi < 4; gi = gi + 1) begin
+            gx[gi] <= cx[gi == 3 ? 1 : gi]; gs[gi] <= cs[gi == 3 ? 1 : gi]; gb[gi] <= cb[gi == 3 ? 1 : gi];
+            gg[gi] <= cg[gi == 3 ? 1 : gi]; gk[gi] <= ck[gi == 3 ? 1 : gi];
+            gv[gi] <= cv[gi == 3 ? 1 : gi] && menu_active;
+        end
+    end else if (lt && frame_tick) begin
+        if (ltf == LT_N) begin lt <= 0; ago_lt <= 1; pin0 <= 1; end else ltf <= ltf + 1'b1;
+    end
+    begin : liftsz
+        reg [16:0] ps_, pb_;
+        ps_ = gs[1] * lift_k(ltf); pb_ = gb[1] * lift_k(ltf);
+        lts <= ps_[15:8]; ltb <= pb_[12:8];
+    end
+    if (!anim && !ago_lt && !ago) pin0 <= 0;
+    if (zm_go) begin                                               // snapshot the selected cover's rest geometry
+        zm <= 1; zdir <= zm_in; zf <= 0;
+        zx0 <= cx[1]; zs0 <= cs[1]; zt0 <= 11'sd96 - $signed({4'b0, cs[1][7:1]}) + cy[1];
+    end else if (zm && frame_tick) begin
+        if (zf == GN_MORPH - 1) zm <= 0; else zf <= zf + 1'b1;
+    end
+    begin : zoomsz                                                 // three registered steps; the frame is 1.24 M cycles long
+        zk_r <= zdir ? grid_morph(zf) : 9'd256 - grid_morph(zf);
+        zd_r <= (ZS - zs0) * zk_r;
+        zs_r <= zs0 + zd_r[15:8];
+        zx_r <= zx0 - ($signed({4'b0, zs_r[7:1]}) - $signed({4'b0, zs0[7:1]}));
+        zy_r <= zt0 - ($signed({4'b0, zs_r[7:1]}) - $signed({4'b0, zs0[7:1]})) - 11'sd96 + $signed({4'b0, zs_r[7:1]});
+    end
     if (vt_go) begin
         vt_arm <= 1; vt <= 0; vf <= 0; vt_wait <= 0; vt_rdy <= 0; vt_dir <= vt_in; vt_fxr <= vt_fx;
         for (gi = 0; gi < 4; gi = gi + 1) begin                    // what is on screen now (registered: the old state)
@@ -1400,6 +1651,11 @@ wire [10:0] g_pos = idx - rlo;                         // the selection's place 
 wire [1:0]  g_col = g_pos[1:0]; wire [8:0] g_row = g_pos[10:2];
 wire signed [10:0] g_vr = $signed({2'b0, g_row}) - $signed({2'b0, g_top});   // its lattice row from the top one
 wire signed [10:0] g_cx = 11'sd6 + GPX * $signed({9'd0, g_col});             // the pop's x at that cell
+// whether a row down (a full row, or a shorter last row) or a row up exists, registered: presses wait a frame anyway
+reg         gd_full = 0, gd_last = 0, gu_ok = 0;
+always @(posedge clk_74a) begin
+    gd_full <= g_pos + 11'd4 < rcount; gd_last <= (g_pos | 11'd3) + 11'd1 < rcount; gu_ok <= g_pos >= 11'd4;
+end
 wire signed [10:0] lat_vy = vt_busy ? (vt_dir ? ul : D - ul) : (cart_view ? D : 11'sd0);   // pushed out by a cartridge
 reg  signed [9:0]  lat_sbase = 0;                      // list row of lattice row 0 as the cells were last snapped
 reg  [10:0] lat_g [0:11]; reg lat_v [0:11];           // the cells: game, in the list
@@ -1414,6 +1670,8 @@ function signed [10:0] glerp(input signed [10:0] a, input signed [10:0] b, input
 endfunction
 always @(posedge clk_74a) begin
     g_go1 <= g_go; g_go2 <= g_go1;                     // two cycles: rlo and rcount follow a mode change
+    mk_r <= g_min ? grid_morph(g_mf) : 9'd256 - grid_morph(g_mf);
+    mv_r <= grid_move(g_vf); sc_r <= grid_scroll(g_sf);
     if (g_go2) begin
         if (g_kind == 2'd1) begin                      // morph in: the selection's row becomes the top row
             g_top <= g_row; g_up <= 0; lat_y <= 0; g_morph <= 1; g_min <= 1; g_mf <= 0; side_b <= 5'd9; lat_b <= 0;
@@ -1431,19 +1689,19 @@ always @(posedge clk_74a) begin
         end
     end else if (frame_tick) begin
         if (g_scroll) begin
-            lat_y <= g_sdn ? -$signed({4'd0, grid_scroll(g_sf)}) : $signed({4'd0, grid_scroll(g_sf)});
+            lat_y <= g_sdn ? -$signed({4'd0, sc_r}) : $signed({4'd0, sc_r});
             if (g_sf == GN_SCROLL - 1) begin g_scroll <= 0; lat_y <= 0; g_up <= 0; g_top <= g_sdn ? g_top + 1'b1 : g_top - 1'b1; end
             else g_sf <= g_sf + 1'b1;
         end
         if (g_move) begin : mv
             reg [8:0] k;
-            k = grid_move(g_vf);
+            k = mv_r;
             p_x <= glerp(p_fx, p_tx, k); p_y <= glerp(p_fy, p_ty, k); p_s <= glerp({3'b0, p_fs}, {3'b0, p_ts}, k);
             if (g_vf == GN_MOVE - 1) g_move <= 0; else g_vf <= g_vf + 1'b1;
         end
         if (g_morph) begin : mo
             reg [8:0] k; reg [3:0] fo;
-            k = g_min ? grid_morph(g_mf) : 9'd256 - grid_morph(g_mf);
+            k = mk_r;
             fo = g_min ? g_mf : 4'd11 - g_mf;
             p_x <= glerp(p_fx, p_tx, k); p_y <= glerp(p_fy, p_ty, k); p_s <= glerp({3'b0, p_fs}, {3'b0, p_ts}, k);
             side_b <= grid_sideb(fo); lat_b <= grid_latb(fo);
@@ -1472,7 +1730,7 @@ always @(posedge clk_74a) begin   // registered: these cross into clk_vid
         reg signed [10:0] nx; reg [7:0] ns; reg [4:0] nb; reg [10:0] ng; reg nv;
         // final slots: moving right -> -2,-1,0,1 ; moving left -> -1,0,1,2 ; at rest -> -1,0,1 (k = 3 unused)
         ts = (anim && !adir) ? ki - 2 : ki - 1;
-        fs = !anim ? ts : (!adir ? ts + 1 : ts - 1);
+        fs = (!anim || (pin0 && ki == 0)) ? ts : (!adir ? ts + 1 : ts - 1);
         dx  = slot_x(ts) - slot_x(fs);
         ds  = $signed({2'b0, slot_s(ts)}) - $signed({2'b0, slot_s(fs)});
         dbb = $signed({5'b0, slot_b(ts)}) - $signed({5'b0, slot_b(fs)});
@@ -1491,17 +1749,24 @@ always @(posedge clk_74a) begin   // registered: these cross into clk_vid
         if (vt_busy && (ki == 3 || (vt_dir && ki != 1))) begin      // leaving: from the snapshot
             cx[ki] <= gx[ki]; cs[ki] <= gs[ki]; cb[ki] <= gb[ki]; cg[ki] <= gg[ki]; cv[ki] <= gv[ki]; ck[ki] <= gk[ki];
             cy[ki] <= (ki == 3) ? (vt_dir ? um : -um) : ul;
+        end else if (lt) begin                                      // the old row, its centre shrinking away
+            if (ki == 1) begin cs[1] <= lts; cb[1] <= ltb; cx[1] <= 11'sd160 - $signed({4'b0, lts[7:1]}); cv[1] <= lts != 0; end
+            else begin cx[ki] <= gx[ki]; cs[ki] <= gs[ki]; cb[ki] <= gb[ki]; cv[ki] <= gv[ki] && ki != 3; end
+            cg[ki] <= gg[ki]; ck[ki] <= gk[ki]; cy[ki] <= 0;
         end else if (use_grid) begin                                // the grid: the pop and, in a morph, the side covers
             case (ki)
-            0: begin cx[0] <= 11'sd12; cs[0] <= 8'd80; cb[0] <= side_b; cg[0] <= vmap(prev); cv[0] <= side_b != 0 && rcount > 1; ck[0] <= 0; cy[0] <= vt_busy ? D - ul : 11'sd0; end
-            2: begin cx[2] <= 11'sd228; cs[2] <= 8'd80; cb[2] <= side_b; cg[2] <= vmap(next); cv[2] <= side_b != 0 && rcount > 1; ck[2] <= 0; cy[2] <= vt_busy ? D - ul : 11'sd0; end
-            1: begin cx[1] <= p_x; cs[1] <= p_s; cb[1] <= 5'd16; cg[1] <= vmap(idx); cv[1] <= 1; ck[1] <= 0;
+            0: begin cx[0] <= 11'sd12; cs[0] <= 8'd80; cb[0] <= side_b; cg[0] <= (fav_mode && live) ? g_prev : vmap(prev); cv[0] <= side_b != 0 && rcount > 1; ck[0] <= 0; cy[0] <= vt_busy ? D - ul : 11'sd0; end
+            2: begin cx[2] <= 11'sd228; cs[2] <= 8'd80; cb[2] <= side_b; cg[2] <= (fav_mode && live) ? g_next : vmap(next); cv[2] <= side_b != 0 && rcount > 1; ck[2] <= 0; cy[2] <= vt_busy ? D - ul : 11'sd0; end
+            1: begin cx[1] <= p_x; cs[1] <= p_s; cb[1] <= 5'd16; cg[1] <= cur_g; cv[1] <= 1; ck[1] <= 0;
                      cy[1] <= p_y - 11'sd96 + $signed({4'b0, p_s[7:1]}) + (vt_busy ? D - um : 11'sd0); end
             default: begin cv[3] <= 0; cx[3] <= nxr[3]; cs[3] <= nsr[3]; cb[3] <= nbr[3]; cg[3] <= ngr[3]; ck[3] <= 0; cy[3] <= 0; end
             endcase
         end else begin                                              // the live selection
             cx[ki] <= nxr[ki]; cs[ki] <= nsr[ki]; cb[ki] <= nbr[ki]; cg[ki] <= ngr[ki]; cv[ki] <= nvr[ki]; ck[ki] <= (ki == 1) && vsel;
             cy[ki] <= !vt_busy ? 11'sd0 : (ki == 1) ? (vt_dir ? um - D : D - um) : D - ul;
+        end
+        if (zm && ki == 1) begin                                    // the selected cover grows into the game, or shrinks back
+            cs[1] <= zs_r; cx[1] <= zx_r; cy[1] <= zy_r; cb[1] <= 5'd16; cv[1] <= 1;
         end
     end
 end
@@ -1531,10 +1796,10 @@ end
 
 // ================================================================== video (clk_vid)
 reg [1:0] menu_s = 0; reg [3:0] lvl_s = 0, tl_s = 0; reg [10:0] idx_s = 0, cnt_s = 0; reg [6:0] pos_s = 0;
-reg [7:0] tw_s = 0; reg [8:0] htw_s = 0, hsw_s = 0; reg [2:0] gen_s = 0;
+reg [7:0] tw_s = 0; reg [8:0] htw_s = 0, hsw_s = 0, lgw_s = 0; reg [2:0] gen_s = 0;
 always @(posedge clk_vid) begin
     menu_s <= {menu_s[0], menu_active}; lvl_s <= level; tl_s <= tlevel; idx_s <= ridx; cnt_s <= rcount; pos_s <= pos_bar;
-    tw_s <= title_w; htw_s <= htw; hsw_s <= hsw; gen_s <= {gen_s[1:0], gen};
+    tw_s <= title_w; htw_s <= htw; hsw_s <= hsw; lgw_s <= lgw; gen_s <= {gen_s[1:0], gen};
 end
 wire menu_v = menu_s[1];
 assign hr_mode = menu_v;
@@ -1716,7 +1981,7 @@ wire       h_cut  = !h_refl && h_ax < 6 && h_ay < 6 && ({4'd0, h_cx} * h_cx + {4
 wire [4:0] h_a    = h_refl ? ((hR - 1'b1 - h_ry) >> 2) : 5'd16;         // reflection strength, 0..6
 
 // text: title (16 rows) and platform line, from the hi-res map
-localparam [8:0] HT1Y = 200, HT2Y = 222, HDY = 256;
+localparam [8:0] HT1Y = 200, HT2Y = 222, HDY = 256, HT3Y = 266;
 reg [9:0] hscroll = 0; reg [6:0] hmq_hold = 90;
 wire [9:0] hperiod = {1'b0, htw_s} + 10'd48;
 wire       hmarq = htw_s > 9'd300;
@@ -1736,8 +2001,13 @@ wire [9:0] ht1x = hmarq ? hmx : {1'b0, x - ht1_st};
 wire       ht1_ok = ht1_row && (hmarq ? (x >= 10 && x < 310) : x >= ht1_st) && ht1x < {1'b0, htw_s};
 wire [8:0] ht2x = x - ht2_st;
 wire       ht2_ok = ht2_row && x >= ht2_st && ht2x < hsw_s;
-assign map2_ra = ht2_row ? {1'b1, ht2x} : {1'b0, ht1x[8:0]};
-wire [3:0] htrow = ht2_row ? y - HT2Y : y - HT1Y;
+// the button legend: line 3 of the map, the small font, no title fade (only the menu's level)
+wire       ht3_row = y >= HT3Y && y < HT3Y + 16;
+wire [8:0] ht3_st = 9'd160 - (lgw_s >> 1);
+wire [8:0] ht3x = x - ht3_st;
+wire       ht3_ok = ht3_row && x >= ht3_st && ht3x < lgw_s;
+assign map2_ra = ht3_row ? {2'b10, ht3x} : ht2_row ? {2'b01, ht2x} : {2'b00, ht1x[8:0]};
+wire [3:0] htrow = ht3_row ? y - HT3Y : ht2_row ? y - HT2Y : y - HT1Y;
 
 // position: page dots (8 px pitch, 4x4 dots, the current one an 8x4 pill) up to 32 games, beyond that a 128 px
 // track with an 8 px thumb
@@ -1771,33 +2041,34 @@ picker_dpram #(.WIDTH(16), .ADDR(10)) line_buf (
     .rclk(clk_vid), .raddr({y[0], x}), .q(lb_q));
 
 // ---- stage 1
-reg s1_act = 0, s1_c = 0, s1_cut = 0, s1_t1 = 0, s1_t2 = 0, s1_dc = 0, s1_dd = 0, s1_dr = 0, s1_key = 0;
+reg s1_act = 0, s1_c = 0, s1_cut = 0, s1_t1 = 0, s1_t2 = 0, s1_t3 = 0, s1_dc = 0, s1_dd = 0, s1_dr = 0, s1_key = 0;
 reg [4:0] s1_a = 0, s1_b = 0; reg [3:0] s1_row = 0; reg [3:0] s1_gw = 0; reg [7:0] s1_gi = 0, s1_bay = 0;
 reg [26:0] s1_rp = 0;
 reg [2:0] hde = 0, hhs = 0, hvs = 0;
 always @(posedge clk_vid) begin
     s1_act <= h_act && v_act; s1_c <= hk_any; s1_cut <= h_cut; s1_a <= h_a; s1_b <= hB;
-    s1_t1 <= ht1_ok; s1_t2 <= ht2_ok; s1_row <= htrow; s1_dc <= hd_cur && !hd_rnd; s1_dd <= hd_dim;
+    s1_t1 <= ht1_ok; s1_t2 <= ht2_ok; s1_t3 <= ht3_ok; s1_row <= htrow; s1_dc <= hd_cur && !hd_rnd; s1_dd <= hd_dim;
     s1_key <= hKey; s1_gw <= h_gw; s1_gi <= glow_i(gidx); s1_rp <= grm * rg_m;
     s1_bay <= {bayer(x[1:0], y[1:0]), 4'd8};
     hde <= {hde[1:0], h_act && v_act};
     hhs <= {hhs[1:0], hc == 9'd8};
     hvs <= {hvs[1:0], vc == 0 && hc == 9'd2};
 end
-wire [23:0] font2_q;
+wire [23:0] font2_q, font3_q;
 font_hr_rom font2 (.clk(clk_vid), .addr({map2_q[10:4], s1_row}), .q(font2_q));
+font_sm_rom font3 (.clk(clk_vid), .addr({map2_q[9:4], s1_row}), .q(font3_q));
 // ---- stage 2
-reg s2_act = 0, s2_c = 0, s2_cut = 0, s2_t1 = 0, s2_t2 = 0, s2_dc = 0, s2_dd = 0; reg [3:0] s2_col = 0; reg s2_gv = 0;
+reg s2_act = 0, s2_c = 0, s2_cut = 0, s2_t1 = 0, s2_t2 = 0, s2_t3 = 0, s2_dc = 0, s2_dd = 0; reg [3:0] s2_col = 0; reg s2_gv = 0;
 reg [4:0] s2_a = 0, s2_b = 0; reg [15:0] s2_pix = 0; reg s2_key = 0; reg [3:0] s2_gw = 0;
 reg [15:0] s2_gk = 0; reg [7:0] s2_bay = 0, s2_rw = 0;
 always @(posedge clk_vid) begin
-    s2_act <= s1_act; s2_c <= s1_c; s2_cut <= s1_cut; s2_a <= s1_a; s2_b <= s1_b; s2_t1 <= s1_t1; s2_t2 <= s1_t2;
+    s2_act <= s1_act; s2_c <= s1_c; s2_cut <= s1_cut; s2_a <= s1_a; s2_b <= s1_b; s2_t1 <= s1_t1; s2_t2 <= s1_t2; s2_t3 <= s1_t3;
     s2_dc <= s1_dc; s2_dd <= s1_dd; s2_pix <= lb_q;
     s2_key <= s1_key; s2_gw <= s1_gw; s2_gk <= s1_gi * glow_v; s2_bay <= s1_bay;
     s2_rw <= (s1_rp[26:16] > 11'd255) ? 8'd255 : s1_rp[23:16];
     s2_col <= map2_q[3:0]; s2_gv <= map2_q[11];
 end
-wire [1:0] galpha = (s2_gv && s2_col < 12) ? font2_q[{s2_col, 1'b0} +: 2] : 2'd0;
+wire [1:0] galpha = (s2_gv && s2_col < 12) ? (s2_t3 ? font3_q[{s2_col, 1'b0} +: 2] : font2_q[{s2_col, 1'b0} +: 2]) : 2'd0;
 // glow color * strength, dithered (4x4 Bayer) to hide banding in the dark falloff; the ring is a lighter tint on top
 wire [7:0] ac_r = {acc_v[15:11], acc_v[15:13]}, ac_g = {acc_v[10:5], acc_v[10:9]}, ac_b = {acc_v[4:0], acc_v[4:2]};
 wire [7:0] gk8 = s2_gk[15:8];
@@ -1819,6 +2090,8 @@ wire [4:0] tal  = (galpha == 3) ? 5'd16 : (galpha == 2) ? 5'd11 : (galpha == 1) 
 wire [8:0] tlp  = tal * {tl_s, 1'b0};
 wire [8:0] tlq  = tlp[8:4] * hlvl;
 wire [4:0] twc  = tlq[8:4];
+wire [8:0] t3p  = tal * hlvl;                       // the legend: the menu's level only, no title fade
+wire [4:0] t3c  = t3p[8:4];
 reg [31:0] q_samp = 0;   // log: the pixel fetched for (160, 100) with its row base
 reg [21:0] dcnt = 0; reg [3:0] dacc = 0, dshow = 0;   // diagnostics: fetcher activity over ~30 ms windows (clk_sys)
 // diagnostics: 24 squares (8 px on a 10 px pitch, groups of 4) along the top: green = 1, dark red = 0
@@ -1838,6 +2111,7 @@ always @(*) begin
     else if (s2_c && !s2_cut && !s2_clear)  h_out = {mix(s2_br, cr2, hwc), mix(s2_bg, cg2, hwc), mix(s2_bb, cb2, hwc)};
     else if (s2_t1)       h_out = {mix(s2_br, 8'd246, twc), mix(s2_bg, 8'd246, twc), mix(s2_bb, 8'd250, twc)};
     else if (s2_t2)       h_out = {mix(s2_br, 8'd128, twc), mix(s2_bg, 8'd140, twc), mix(s2_bb, 8'd168, twc)};
+    else if (s2_t3)       h_out = {mix(s2_br, 8'd128, t3c), mix(s2_bg, 8'd140, t3c), mix(s2_bb, 8'd168, t3c)};
     else if (s2_dc)       h_out = {mix(s2_br, 8'd232, hlvl), mix(s2_bg, 8'd236, hlvl), mix(s2_bb, 8'd244, hlvl)};
     else if (s2_dd)       h_out = {mix(s2_br, 8'd74, hlvl), mix(s2_bg, 8'd82, hlvl), mix(s2_bb, 8'd104, hlvl)};
     else                  h_out = {s2_br, s2_bg, s2_bb};
@@ -1980,32 +2254,33 @@ end
 // units of 4096 clk_74a cycles (55 us), 32 bits of data. Record 0 is a header: "PLOG", next write slot, total count.
 // tools/read_picker_log.py decodes it.
 reg  [35:0] lg_time = 0;
-reg  [6:0]  lg_st = S_BOOT;
+reg  [7:0]  lg_st = S_BOOT;
 reg  [23:0] dbg_a0 = 0, dbg_a = 0, lg_dbg = 0;
 reg  [31:0] q_a0 = 0, q_a = 0;
-reg  [8:0]  lg_wp = 9'd1;
+reg  [7:0]  lg_wp = 8'd1;
 reg  [15:0] lg_n = 0;
 reg  [3:0]  qcnt = 0; reg q_pend = 0; reg menu_1 = 0;
 reg         lg_we = 0; reg [63:0] lg_wd = 0;
 reg  [31:0] lg_cart = 0;
 reg  [1:0]  lgh_pend = 0; reg lgh_seen = 0;
 wire [63:0] lg_q;
-picker_dpram #(.WIDTH(64), .ADDR(9)) log_ram (
+picker_dpram #(.WIDTH(64), .ADDR(8)) log_ram (
     .wclk(clk_74a), .we(lg_we), .waddr(lg_wp), .wdata(lg_wd),
-    .rclk(clk_74a), .raddr(bridge_addr[11:3]), .q(lg_q));
+    .rclk(clk_74a), .raddr(bridge_addr[10:3]), .q(lg_q));
 reg  [11:0] lr_a = 0;
 always @(posedge clk_74a) lr_a <= bridge_addr[11:0];
-wire [31:0] log_word = (lr_a[11:3] == 0) ? (lr_a[2] ? {7'd0, lg_wp, lg_n} : "PLOG") : (lr_a[2] ? lg_q[31:0] : lg_q[63:32]);
+wire [31:0] log_word = (lr_a[10:3] == 0) ? (lr_a[2] ? {8'd0, lg_wp, lg_n} : "PLOG") : (lr_a[2] ? lg_q[31:0] : lg_q[63:32]);
 reg  [9:0]  fr_a = 0;
 always @(posedge clk_74a) fr_a <= bridge_addr[11:2];
 reg  [31:0] fav_word;
-always @(*) begin : favw                             // "FAV1", u16 version 1, u16 n, then {u32 crc, u8 state, 3 pad}
-    reg [8:0] r;
-    r = (fr_a - 10'd2) >> 1;
-    if (fr_a == 0) fav_word = "FAV1";
-    else if (fr_a == 1) fav_word = {8'h01, 8'h00, 4'd0, fv_n, 8'h00};
-    else if (r < fv_n && !fr_a[0]) fav_word = {fv_crc[r[3:0]][7:0], fv_crc[r[3:0]][15:8], fv_crc[r[3:0]][23:16], fv_crc[r[3:0]][31:24]};
-    else if (r < fv_n) fav_word = {7'd0, fv_st[r[3:0]], 24'd0};
+always @(*) begin : favw                             // "FAV2", u16 version 2, u16 n, then 16 byte records:
+    reg [7:0] r; reg [1:0] f;                        // u32 crc, u8 state, 3 pad, u16 favorites position, u16 A to Z position, 4 pad
+    r = (fr_a - 10'd2) >> 2; f = fr_a[1:0] - 2'd2;
+    if (fr_a == 0) fav_word = "FAV2";
+    else if (fr_a == 1) fav_word = {8'h02, 8'h00, 4'd0, fv_n, 8'h00};
+    else if (r < fv_n && f == 0) fav_word = {fv_crc[r[3:0]][7:0], fv_crc[r[3:0]][15:8], fv_crc[r[3:0]][23:16], fv_crc[r[3:0]][31:24]};
+    else if (r < fv_n && f == 1) fav_word = {7'd0, fv_st[r[3:0]], 24'd0};
+    else if (r < fv_n && f == 2) fav_word = {5'd0, fv_fp[r[3:0]][10:8], fv_fp[r[3:0]][7:0], 5'd0, fv_ap[r[3:0]][10:8], fv_ap[r[3:0]][7:0]} ;
     else fav_word = 32'd0;
 end
 reg  [31:0] crl_word;
@@ -2040,7 +2315,7 @@ always @(posedge clk_74a) begin
     end else if (state != lg_st) begin
         lg_st <= state;
         lg_we <= !(state >= S_MAP_FETCH && state <= S_MAP_DONE);   // the per-character layout steps are noise
-        lg_wd <= {"S", lg_time[35:12], state, lg_st, target_dataslot_err, oerr, 1'b0, idx};
+        lg_wd <= {"S", lg_time[35:12], state, lg_st, target_dataslot_err[1:0], oerr, idx};   // 8 + 24 + 8 + 8 + 2 + 3 + 11
     end else if (dbg_a != lg_dbg) begin
         lg_dbg <= dbg_a; lg_we <= 1;
         lg_wd <= {"D", lg_time[35:12], 8'd0, dbg_a};
@@ -2048,7 +2323,7 @@ always @(posedge clk_74a) begin
         q_pend <= 0; lg_we <= 1;
         lg_wd <= {"Q", lg_time[35:12], q_a};
     end
-    if (lg_we) begin lg_wp <= (lg_wp == 9'd511) ? 9'd65 : lg_wp + 1'b1; lg_n <= lg_n + 1'b1; end   // 1..64 keep the boot
+    if (lg_we) begin lg_wp <= (lg_wp == 8'd255) ? 8'd65 : lg_wp + 1'b1; lg_n <= lg_n + 1'b1; end   // 1..64 keep the boot
 end
 
 endmodule
@@ -2057,6 +2332,13 @@ endmodule
 module font_hr_rom (input wire clk, input wire [10:0] addr, output reg [23:0] q);
     reg [23:0] rom [0:2047];
     initial $readmemh("font_hr.hex", rom);
+    always @(posedge clk) q <= rom[addr];
+endmodule
+
+// the legend's font: Inter 9 px with the button pictures in codes 1 to 14 (tools/make_legend_font.py), same format
+module font_sm_rom (input wire clk, input wire [9:0] addr, output reg [23:0] q);
+    reg [23:0] rom [0:1023];
+    initial $readmemh("font_sm.hex", rom);
     always @(posedge clk) q <= rom[addr];
 endmodule
 

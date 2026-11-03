@@ -153,12 +153,12 @@ test('streaming core: v7 lists favorites at the top and again under their letter
   assert.equal(buf.toString('ascii', 96, 100), 'CRT1');
   assert.equal(buf.readUInt32LE(100), cartArt);
   assert.equal(buf.readUInt16LE(104), 42); // no carts: every entry is browsable
-  assert.equal(buf.readUInt16LE(106), 3); // carts.cfg path, and the All games tile (there are favorites)
-  assert.equal(buf.length, cartArt + 4 * 65536);
-  // The tile is opaque: no 0x0000 anywhere in its 128 and 80 images.
-  const tile = buf.subarray(cartArt + 3 * 65536, cartArt + 3 * 65536 + 45568);
+  assert.equal(buf.readUInt16LE(106), 15); // carts.cfg path, the All games tile (there are favorites), the empty slot, entry positions
+  assert.equal(buf.length, cartArt + 5 * 65536);
+  // The tile (image 4, after the empty slot) is opaque: no 0x0000 anywhere in its 128 and 80 images.
+  const tile = buf.subarray(cartArt + 4 * 65536, cartArt + 4 * 65536 + 45568);
   for (let i = 0; i < tile.length; i += 2) assert.notEqual(tile.readUInt16LE(i), 0, `tile word ${i / 2}`);
-  assert.ok(buf.subarray(cartArt + 3 * 65536 + 45568).every((b) => b === 0), 'tile padded to the stride with zeros');
+  assert.ok(buf.subarray(cartArt + 4 * 65536 + 45568).every((b) => b === 0), 'tile padded to the stride with zeros');
   const rec = (i: number) => buf.subarray(table + i * 8, table + i * 8 + 8);
   s.roms.forEach((r, i) => {
     const romBytes = fs.readFileSync(path.join(CARD, r));

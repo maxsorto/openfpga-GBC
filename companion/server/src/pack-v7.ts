@@ -3,7 +3,16 @@
  * at a fixed stride so the core can read any one by index. The reference is
  * tools/make_cover_pack.py --v7.
  *
- *   entry 128 B: title char[40] | flags u8 | pad u8 | accent u16 | size u32 | crc32 u32 | path char[76] (cut to 75)
+ *   entry 128 B: title char[40] | flags u8 | pad u8 | accent u16 | size u32 | crc32 u32 |
+ *                path char[72] (cut to 71 plus a NUL) | fav_pos u16 | az_pos u16
+ *                fav_pos (bytes 124, 125): the game's place in the favorites section, 0 based, on
+ *                every entry of a favorite game (its copy in the section and its A to Z entry);
+ *                0xFFFF for a game that is not a favorite.
+ *                az_pos (bytes 126, 127): the pack index of the game's entry in the A to Z list (for
+ *                that entry its own index, for its copy in the favorites section its twin's index);
+ *                0xFFFF for cartridge-only entries.
+ *                The path in the entry is informational (the core opens ROMs through the path
+ *                structs), so it is cut to 71 bytes; the plan warns when that cuts a path.
  *                flags bit 0 = original Game Boy, bit 1 = favorite (on every entry of a favorite game),
  *                bit 2 = cartridge only (no ROM on the card: zero path structs, CRC is the cart's id)
  *                accent = RGB565 color of the cover for the core's glow (0 = none), see accent.ts
@@ -28,9 +37,15 @@
  * only these); the rest are cartridge-only entries for carts seen on the Pocket. flags bit
  * 0: the carts.cfg path struct is there. The default art is 3 blobs (gray DMG, black dual,
  * clear GBC-only cart; 45568 B each at a 65536 stride) at a 4096 aligned offset after the
- * FPR2 table, and ends the file. In those three, RGB565 0x0000 is transparent. flags bit
- * 1: a fourth image follows at the same stride, the All games tile Favorites mode shows
- * after your favorites (opaque, see tile.ts). It is there whenever the pack has favorites.
+ * FPR2 table, and ends the file. In the cartridge images, RGB565 0x0000 is transparent.
+ * Images, in order, at a 65536 stride:
+ *   0 gray DMG cart, 1 black dual cart, 2 clear GBC cart
+ *   3 the empty slot, for the core's "No cartridge" view (flags bit 2; keyed like the carts)
+ *   then the All games tile, Favorites mode's closing cover (flags bit 1; opaque, see
+ *   tile.ts): image 4 when the empty slot is there, image 3 when it is not.
+ * The empty slot is there whenever its art is (assets/carts/empty-*.png); the tile
+ * whenever the pack has favorites. flags bit 3: the entries carry fav_pos and az_pos
+ * (always set here; older v7 packs have zeros in those bytes).
  *
  * Cartridge fingerprints, for Play Cartridge: at file offset 80 (in the reserved area,
  * after the letter index) "FPR2" | u32 file offset of the table | u16 entry count | u16 0.
@@ -54,7 +69,7 @@ import {
   type PackEntry,
   type PackFormat,
 } from './pack-common.js';
-import { CART_ACCENTS, CART_KINDS, defaultCartBlobs } from './cartart.js';
+import { CART_ACCENTS, CART_KINDS, defaultCartBlobs, emptySlotBlob } from './cartart.js';
 
 /** File offset of "CRT1" in the reserved area. */
 export const CRT_OFFSET = 96;
@@ -62,6 +77,15 @@ export const CRT_OFFSET = 96;
 export const CRT_HAS_CARTS_CFG = 1;
 /** CRT1 flags bit 1: the default art block has a fourth image, the All games tile. */
 export const CRT_HAS_ALL_GAMES_TILE = 2;
+/** CRT1 flags bit 2: image 3 is the empty slot, for the core's "No cartridge" view. */
+export const CRT_HAS_EMPTY_SLOT = 4;
+/** CRT1 flags bit 3: entries carry fav_pos and az_pos (bytes 124..127). Always set by this writer. */
+export const CRT_HAS_POSITIONS = 8;
+
+/** Images in the default art block: the 3 carts, the empty slot if its art is there, the tile if asked. */
+export function defaultImageCount(tile: boolean): number {
+  return CART_KINDS.length + (emptySlotBlob() ? 1 : 0) + (tile ? 1 : 0);
+}
 const align4096 = (n: number) => (n + 4095) & ~4095;
 
 /** File offset of "FPR2" in the reserved area. */
@@ -116,13 +140,15 @@ export const PACK_V7 = 7;
 export const MAX_GAMES_V7 = 2047;
 export const STRIDE_V7 = 65536;
 /** v7 keeps 75 bytes of the ROM path in the entry, plus a NUL. */
-const ROM_PATH_MAX_V7 = 75;
+export const ROM_PATH_MAX_V7 = 71;
+/** fav_pos and az_pos when there is no such place. */
+export const NO_PLACE = 0xffff;
 
 export const formatV7: PackFormat = {
   version: PACK_V7,
   maxGames: MAX_GAMES_V7,
   stride: STRIDE_V7,
-  entry(g) {
+  entry(g, place) {
     if (!g.crc || !/^[0-9A-Fa-f]{8}$/.test(g.crc)) throw new Error(`${g.romFile}: pack v7 needs the ROM's CRC32`);
     const e = Buffer.alloc(ENTRY_BYTES);
     fixed(asciiTitle(g.title), 40).copy(e, 0);
@@ -130,29 +156,34 @@ export const formatV7: PackFormat = {
     e.writeUInt16LE((g.accent ?? 0) & 0xffff, 42);
     e.writeUInt32LE(g.romSize >>> 0, 44);
     e.writeUInt32LE(parseInt(g.crc, 16) >>> 0, 48);
-    if (!g.cartOnly) fixed(Buffer.from(gamePaths(g.platform, g.romFile).rom, 'utf8').subarray(0, ROM_PATH_MAX_V7), 76).copy(e, 52);
+    if (!g.cartOnly) fixed(Buffer.from(gamePaths(g.platform, g.romFile).rom, 'utf8').subarray(0, ROM_PATH_MAX_V7), 72).copy(e, 52);
+    e.writeUInt16LE(place.favPos >= 0 ? place.favPos : NO_PLACE, 124);
+    e.writeUInt16LE(place.azPos >= 0 ? place.azPos : NO_PLACE, 126);
     return e;
   },
   // The core opens favorites.cfg and carts.cfg through these path structs, right after the log one.
   trailer: (platform) => [`/Saves/${platform}/common/favorites.cfg`, `/Saves/${platform}/common/carts.cfg`],
   allGamesTile: true,
   tailBytes(count, tile) {
-    return defaultArtOffset(count) + (CART_KINDS.length + (tile ? 1 : 0)) * STRIDE_V7 - tailStart(formatV7, count);
+    return defaultArtOffset(count) + defaultImageCount(tile) * STRIDE_V7 - tailStart(formatV7, count);
   },
   tail(games, start, tile) {
     const table = align4(start);
     const art = defaultArtOffset(games.length);
-    const out = Buffer.alloc(art + (CART_KINDS.length + (tile ? 1 : 0)) * STRIDE_V7 - start);
+    const out = Buffer.alloc(art + defaultImageCount(!!tile) * STRIDE_V7 - start);
     games.forEach((g, i) => {
       const f = g.fingerprint;
       if (f && f.length !== FINGERPRINT_BYTES) throw new Error(`${g.romFile}: a fingerprint is ${FINGERPRINT_BYTES} bytes`);
       f?.copy(out, table - start + i * FINGERPRINT_BYTES);
     });
     defaultCartBlobs().forEach((b, i) => b.copy(out, art - start + i * STRIDE_V7));
-    // Favorites mode's closing cover, after the three cartridges.
+    // Image 3: the empty slot, when its art is there.
+    const empty = emptySlotBlob();
+    if (empty) empty.copy(out, art - start + CART_KINDS.length * STRIDE_V7);
+    // Then Favorites mode's closing cover.
     if (tile) {
       if (tile.length !== 45568) throw new Error('The All games tile is one art blob');
-      tile.copy(out, art - start + CART_KINDS.length * STRIDE_V7);
+      tile.copy(out, art - start + (CART_KINDS.length + (empty ? 1 : 0)) * STRIDE_V7);
     }
     return out;
   },
@@ -188,7 +219,10 @@ export const formatV7: PackFormat = {
     r.write('CRT1', c, 'ascii');
     r.writeUInt32LE(defaultArtOffset(games.length), c + 4);
     r.writeUInt16LE(listCount(games), c + 8);
-    r.writeUInt16LE(CRT_HAS_CARTS_CFG | (hasFavorites(games) ? CRT_HAS_ALL_GAMES_TILE : 0), c + 10);
+    r.writeUInt16LE(
+      CRT_HAS_CARTS_CFG | (hasFavorites(games) ? CRT_HAS_ALL_GAMES_TILE : 0) | (emptySlotBlob() ? CRT_HAS_EMPTY_SLOT : 0) | CRT_HAS_POSITIONS,
+      c + 10,
+    );
     CART_KINDS.forEach((k, i) => r.writeUInt16LE(CART_ACCENTS[k], c + 12 + i * 2));
     r.writeUInt16LE(0, c + 18);
     return r;

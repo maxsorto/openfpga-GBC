@@ -135,7 +135,7 @@ test('favorites.cfg: parsing, later records win, malformed files are ignored', (
     f(b);
     return parseFavorites(b);
   };
-  assert.equal(bad((b) => b.write('FAV2', 0)), null);
+  assert.equal(bad((b) => b.write('FAV3', 0)), null);
   assert.equal(bad((b) => b.writeUInt16LE(2, 4)), null);
   assert.equal(bad((b) => b.writeUInt16LE(600, 6)), null);
   assert.equal(bad((b) => b.writeUInt8(7, 12)), null);
@@ -144,6 +144,34 @@ test('favorites.cfg: parsing, later records win, malformed files are ignored', (
   assert.deepEqual(parseFavorites(empty), { changes: [], records: 0 });
   assert.equal(empty.toString('latin1', 0, 4), 'FAV1');
   assert.ok(empty.subarray(8).every((b) => b === 0));
+});
+
+test('favorites.cfg version 2 (FAV2): 16 byte records, only the CRC and state are used', () => {
+  const f = Buffer.alloc(4096);
+  f.write('FAV2', 0, 'latin1');
+  f.writeUInt16LE(1, 4);
+  f.writeUInt16LE(3, 6);
+  const rec = (i: number, crc: string, state: number, favPos: number, azPos: number) => {
+    const o = 8 + i * 16;
+    f.writeUInt32LE(parseInt(crc, 16) >>> 0, o);
+    f.writeUInt32LE(state, o + 4);
+    f.writeUInt16LE(favPos, o + 8);
+    f.writeUInt16LE(azPos, o + 10);
+  };
+  rec(0, TETRIS, 1, 0, 12);
+  rec(1, ZELDA, 1, 1, 30);
+  rec(2, TETRIS, 0, 0xffff, 12);
+  assert.deepEqual(parseFavorites(f), { changes: [{ crc: ZELDA, favorite: true }, { crc: TETRIS, favorite: false }], records: 3 });
+  // A FAV2 file whose header says version 2 is read the same way.
+  f.writeUInt16LE(2, 4);
+  assert.equal(parseFavorites(f)!.records, 3);
+  // A state other than 0 or 1, or too many records for the file, is not trusted.
+  const bad = Buffer.from(f);
+  bad.writeUInt32LE(2, 8 + 4);
+  assert.equal(parseFavorites(bad), null);
+  const many = Buffer.from(f);
+  many.writeUInt16LE(300, 6);
+  assert.equal(parseFavorites(many), null);
 });
 
 const FAV = path.join(SAVES, 'favorites.cfg');

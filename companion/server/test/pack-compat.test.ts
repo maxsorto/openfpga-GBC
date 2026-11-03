@@ -12,6 +12,7 @@ import { PYTHON, writeFakeRom, writeFixturePng } from './fixtures.js';
 import { decodeImage, placeholderImage } from '../src/image.js';
 import { artBlobAndAccent } from '../src/pack-common.js';
 import { allGamesTileBlob, tilePicks } from '../src/tile.js';
+import { emptySlotBlob } from '../src/cartart.js';
 import {
   buildPack,
   compareTitles,
@@ -223,7 +224,7 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
 
   // Nothing close to the whole pack is ever one buffer. The largest pieces are fixed size:
   // one cover, the path structs, or the tail (fingerprints and the 3 default cart images).
-  assert.ok(biggest <= 4 * STRIDE_V7, `largest chunk ${biggest}`);
+  assert.ok(biggest <= 6 * STRIDE_V7, `largest chunk ${biggest}`);
 });
 
 test('pack v7 fingerprints (FPR2) match make_cover_pack.py --v7, with a known title and a ROM shorter than the header', async () => {
@@ -279,8 +280,23 @@ test('pack v7 with favorites matches make_cover_pack.py --v7 --favorite, All gam
   const s = readPackSummary(ts)!;
   assert.deepEqual(s.titles.slice(0, 2), ['Kirby', 'Tetris']);
   assert.equal(s.index!.favCount, 2);
-  assert.equal(s.carts!.flags, 3); // carts.cfg path, and the tile
-  const tileAt = s.carts!.artOffset + 3 * STRIDE_V7;
+  assert.equal(s.carts!.flags, 15); // carts.cfg path, the tile, the empty slot, and entry positions
+  // Images: 0 dmg, 1 dual, 2 cgb, 3 the empty slot, 4 the All games tile.
+  const emptyAt = s.carts!.artOffset + 3 * STRIDE_V7;
+  assert.ok(ts.subarray(emptyAt, emptyAt + BLOB_BYTES).equals(emptySlotBlob()!));
+  assert.equal(ts.readUInt16LE(emptyAt), 0, 'the empty slot is keyed: its corner is transparent');
+  const tileAt = s.carts!.artOffset + 4 * STRIDE_V7;
+
+  // fav_pos and az_pos on every entry: Kirby is favorite 0, Tetris favorite 1, both in the
+  // favorites section (entries 0, 1) and again in the A to Z list; others are not favorites.
+  const azIndex = (t: string) => s.titles.lastIndexOf(t);
+  assert.deepEqual([s.favPos[0], s.azPos[0]], [0, azIndex('Kirby')]);
+  assert.deepEqual([s.favPos[1], s.azPos[1]], [1, azIndex('Tetris')]);
+  assert.deepEqual([s.favPos[azIndex('Kirby')], s.azPos[azIndex('Kirby')]], [0, azIndex('Kirby')]);
+  assert.deepEqual([s.favPos[azIndex('Tetris')], s.azPos[azIndex('Tetris')]], [1, azIndex('Tetris')]);
+  const zelda = azIndex('Zelda');
+  assert.deepEqual([s.favPos[zelda], s.azPos[zelda]], [0xffff, zelda]);
+  for (let i = 2; i < s.count; i++) assert.equal(s.azPos[i], i, 'an A to Z entry points at itself');
   assert.equal(ts.length, tileAt + STRIDE_V7);
   const tile = ts.subarray(tileAt, tileAt + BLOB_BYTES);
   for (let i = 0; i < tile.length; i += 2) assert.notEqual(tile.readUInt16LE(i), 0);
@@ -307,4 +323,18 @@ test('All games tile picks: 9 covers spread across the A to Z list, not favorite
   // Fewer than 9 with art: any game is used, still spread out; a short list repeats evenly.
   const few = [e('A', { hasArt: false }), e('B'), e('C', { hasArt: false })];
   assert.deepEqual(tilePicks(few).map((g) => g.title), ['A', 'A', 'A', 'B', 'B', 'B', 'C', 'C', 'C']);
+});
+
+test('pack v7 cuts the entry path to 71 bytes plus a NUL, same as make_cover_pack.py', async () => {
+  const long = 'A Very Long Game Name That Goes On And On Past The Field.gbc'; // path is 79 bytes
+  const f = makeFixture('v7-long-path', [[long, 4096], ['Short.gb', 4096]], [[long.replace(/\.gbc$/, '.png'), 80, 80], ['Short.png', 80, 80]]);
+  const py = runPython(f, path.join(OUT, 'v7-long-path', 'python.bin'), true);
+  const ts = packWriter(7).build(letterOrder(await tsGames(f, 2047)));
+  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  const s = readPackSummary(ts)!;
+  assert.equal(s.roms[0], `/Assets/gbc/common/${long}`.slice(0, 71));
+  assert.equal(ts[528 + 52 + 71], 0, 'NUL after 71 bytes');
+  // The full path is still in the path struct.
+  const paths0 = 528 + 2 * (128 + STRIDE_V7);
+  assert.equal(ts.toString('utf8', paths0, paths0 + 256).replace(/\0+$/, ''), `/Assets/gbc/common/${long}`);
 });

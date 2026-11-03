@@ -111,14 +111,14 @@ module tb_jump;
     force dut.boot_timer = 27'd36_999_990; #100 core_ready = 1; #2000 release dut.boot_timer;
     wait (dut.state == 23 && dut.level == 8);
     $display("idx_ok %0d sec_ok %b", dut.idx_ok, dut.sec_ok);
-    press(1); expect_idx(1);   // down: K
-    press(1); expect_idx(2);   // down: M
-    press(1); expect_idx(6);   // down: P
-    press(0); expect_idx(2);   // up: M
-    press(0); expect_idx(1);   // up: K
-    press(0); expect_idx(0);   // up: D
-    press(0); expect_idx(11);  // up from the top wraps to W
-    press(1); expect_idx(0);   // down from W wraps to D
+    press(9); expect_idx(1);   // down: K
+    press(9); expect_idx(2);   // down: M
+    press(9); expect_idx(6);   // down: P
+    press(8); expect_idx(2);   // up: M
+    press(8); expect_idx(1);   // up: K
+    press(8); expect_idx(0);   // up: D
+    press(8); expect_idx(11);  // up from the top wraps to W
+    press(9); expect_idx(0);   // down from W wraps to D
     $display("RESULT %s (%0d errors)", errs == 0 ? "PASS" : "FAIL", errs);
     $finish;
   end

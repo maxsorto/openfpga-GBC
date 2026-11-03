@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vitrine</title>
+<meta name="description" content="Vitrine is a box art cover flow menu that lives inside the Game Boy and Game Boy Color core on the Analogue Pocket. Every game, face out.">
+<meta name="theme-color" content="#0b0c10">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0c10'/%3E%3Crect x='11' y='7' width='10' height='13' rx='2' fill='%23f6f6fa'/%3E%3Crect x='4' y='10' width='6' height='8' rx='1.5' fill='%23808ca8'/%3E%3Crect x='22' y='10' width='6' height='8' rx='1.5' fill='%23808ca8'/%3E%3Crect x='11' y='22' width='10' height='3' rx='1.5' fill='%23808ca8' opacity='.5'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="nav">
+  <a class="nav-mark" href="#top">Vitrine</a>
+  <nav class="nav-links">
+    <a href="#companion">Companion app</a>
+    <a href="#how">How it works</a>
+    <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="hero-copy">
+    <h1 class="hero-name">Vitrine</h1>
+    <p class="hero-tagline">Every game, face out.</p>
+    <p class="hero-line">A box art menu that lives inside the Game Boy and Game Boy Color core on the Analogue Pocket.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">Get Vitrine</a>
+      <a class="btn btn-secondary" href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker/companion">Companion app</a>
+    </div>
+  </div>
+
+  <div class="hero-stage" id="hero-stage">
+    <img class="hero-cover hero-cover-1 plx" data-rate="0.2" src="assets/cover-1.png" alt="" width="384" height="504" aria-hidden="true">
+    <img class="hero-cover hero-cover-2 plx" data-rate="0.26" src="assets/cover-2.png" alt="" width="384" height="504" aria-hidden="true">
+    <img class="hero-cover hero-cover-3 plx" data-rate="0.12" src="assets/cover-3.png" alt="" width="384" height="504" aria-hidden="true">
+    <div class="hero-frame plx" data-rate="0.05">
+      <video id="hero-video" class="hero-video" muted loop playsinline autoplay preload="metadata" poster="assets/pocket_still.jpg" aria-label="The Vitrine menu running on a white handheld, slowly tilting">
+      </video>
+    </div>
+    <img class="hero-legend plx" data-rate="0.08" src="assets/legend_strip.png" alt="The legend line from the menu: Grid, Options, Play, Favorites, Letter, each with its button drawn as the Pocket's button diamond" width="1510" height="135">
+  </div>
+  <p class="hero-note plx" data-rate="0.05">The handheld in this clip is a stand in rendered for the shot. The screen is the menu, frame for frame.</p>
+</section>
+
+<section class="compare" id="compare">
+  <div class="section-head reveal">
+    <h2>Out of the box, the Pocket shows you file names.</h2>
+    <p>The cores everyone installs today open on a plain list. One file per line, no art, no favorites, no idea what you own. Vitrine opens on your covers.</p>
+  </div>
+  <div class="compare-grid">
+    <figure class="compare-panel reveal">
+      <div class="screen screen-stock" role="img" aria-label="A recreation of the stock file browser: a list of ROM file names, one highlighted">
+        <div class="stock-header"><span>Assets/gbc/common</span><span>9 of 702</span></div>
+        <ul class="stock-list">
+          <li>Donkey Kong Country.gbc</li>
+          <li>Dr. Mario.gb</li>
+          <li>Kirby's Dream Land.gb</li>
+          <li>Kirby's Dream Land 2.gb</li>
+          <li>Kirby's Pinball Land.gb</li>
+          <li>Klax.gb</li>
+          <li>Mario's Picross.gb</li>
+          <li>Metroid II - Return of Samus.gb</li>
+          <li class="is-selected">Pokemon - Crystal Version.gbc</li>
+          <li>Pokemon - Gold Version.gbc</li>
+          <li>Pokemon - Silver Version.gbc</li>
+          <li>Pokemon - Yellow Version.gbc</li>
+          <li>Super Mario Land.gb</li>
+          <li>Tetris.gb</li>
+          <li>Wario Land 3.gbc</li>
+        </ul>
+        <div class="stock-scrollbar"><span></span></div>
+      </div>
+      <figcaption><strong>Stock core.</strong> A recreation in HTML of the file browser, not a screenshot.</figcaption>
+    </figure>
+    <figure class="compare-panel reveal">
+      <div class="screen">
+        <video class="lazy-video" muted loop playsinline preload="none" data-src="assets/grid-view.mp4" poster="assets/grid_key.webp" aria-label="Vitrine: the cover flow, Y into the grid, moves and scrolls, and back"></video>
+      </div>
+      <figcaption><strong>Vitrine.</strong> Frames from the Verilator simulation of the core, pixel for pixel what the Pocket draws.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="story" id="flow">
+  <div class="story-media">
+    <div class="swap-stage screen" data-swap>
+      <img src="assets/menu-1.png" alt="The cover flow: Donkey Kong Country selected in the middle, Wario Land 3 and Kirby's Dream Land either side, reflections under them" width="960" height="864" data-beat="0" class="is-on">
+      <img src="assets/menu-slide.png" alt="The covers mid glide between two games" width="960" height="864" data-beat="1">
+      <img src="assets/menu-3.png" alt="The cover flow on a Game Boy game, the position bar under the title" width="960" height="864" data-beat="2">
+    </div>
+  </div>
+  <div class="story-text">
+    <div class="beat reveal" data-beat="0">
+      <h2>Your covers, at 320 by 288.</h2>
+      <p>Full color box art on the Pocket's screen, the selected game in the middle, its neighbors either side. Reflections on the floor. The title underneath, the platform under that.</p>
+    </div>
+    <div class="beat reveal" data-beat="1">
+      <h3>It glides.</h3>
+      <p>Left and Right move the covers over eight frames with an ease out, at the Game Boy's 59.7 Hz. Hold to scroll. Long titles scroll as a marquee.</p>
+    </div>
+    <div class="beat reveal" data-beat="2">
+      <h3>Hundreds of games, no waiting.</h3>
+      <p>Covers stream from the SD card through a cache of 128, the selected game first, then its neighbors, then four ahead in the direction you are going. Libraries up to 2047 games work. 700 and more are verified on hardware.</p>
+      <p>Favorites and All games are two modes on Select. The position bar shows where you are. Up and Down, or L and R, jump by letter.</p>
+    </div>
+  </div>
+</section>
+
+<section class="scrub" id="grid" data-seq="assets/seq/grid" data-count="130" data-key="18">
+  <div class="scrub-track">
+    <div class="scrub-stage">
+      <div class="scrub-screen screen">
+        <canvas width="1280" height="1152" aria-label="The cover flow morphing into a grid of eight covers as you scroll"></canvas>
+        <div class="scrub-loading"><span></span></div>
+      </div>
+      <div class="scrub-captions">
+        <div class="cap" data-from="0" data-to="3"><h2>Y turns the flow into a grid.</h2><p class="scroll-hint">Scroll to press it.</p></div>
+        <div class="cap" data-from="4" data-to="10"><h2>Twelve frames.</h2><p>The centre cover shrinks into its cell while the other seven fade in around it.</p></div>
+        <div class="cap" data-from="11" data-to="34"><h2>Eight at once, four by two.</h2><p>Left and Right walk the cells and wrap at the row ends. The selection is drawn larger and bright over its cell.</p></div>
+        <div class="cap" data-from="35" data-to="46"><h2>Up and Down move a row.</h2><p>When the selection leaves the window, the rows scroll.</p></div>
+        <div class="cap" data-from="47" data-to="99"><h2>Covers arrive as you go.</h2><p>The cache fetches the three rows on screen first, then the row below, then the row above. A cover that has not arrived yet is a dark tile for a moment.</p></div>
+        <div class="cap" data-from="100" data-to="114"><h2>L and R jump by letter.</h2><p>In the grid too. The letter shows under the title.</p></div>
+        <div class="cap" data-from="115" data-to="129"><h2>Y again.</h2><p>The flow comes back on the game you were on. The grid stays on across Favorites and All games.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="scrub" id="cartridge" data-seq="assets/seq/cart" data-count="68" data-key="43">
+  <div class="scrub-track">
+    <div class="scrub-stage">
+      <div class="scrub-screen screen">
+        <canvas width="1280" height="1152" aria-label="A cartridge's cover dropping into the menu as you scroll"></canvas>
+        <div class="scrub-loading"><span></span></div>
+      </div>
+      <div class="scrub-captions">
+        <div class="cap" data-from="0" data-to="12"><h2>Real cartridges are games too.</h2><p class="scroll-hint">Scroll to push one in.</p></div>
+        <div class="cap" data-from="13" data-to="30"><h2>The slot is empty.</h2><p>Select steps to the cartridge view. The list slides away and leaves the outline of a cart.</p></div>
+        <div class="cap" data-from="31" data-to="46"><h2>Push a cart in.</h2><p>Its cover drops from the top and seats with a ring of light, a shine across the box and a glow in the cover's own colors. The core reads the cart's header and finds it in your pack, even a different revision of a game you own.</p></div>
+        <div class="cap" data-from="47" data-to="54"><h2>Lift it away.</h2><p>Left, Right or Select bring your list back where you left it. Pull the cart and the same happens.</p></div>
+        <div class="cap" data-from="55" data-to="67"><h2>A plays.</h2><p>The cover grows toward the screen as the menu fades. A real cart boots with the save on its own battery. A ROM boots with its battery save loaded.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="aside-row" id="unknown">
+  <figure class="reveal">
+    <div class="screen">
+      <video class="lazy-video" muted loop playsinline preload="none" data-src="assets/cart-unknown.mp4" aria-label="An unknown cartridge drops in as a gray cartridge drawing with the title Klax from its header"></video>
+    </div>
+    <figcaption>A cart that is not in your library yet.</figcaption>
+  </figure>
+  <div class="aside-text reveal">
+    <h3>Unknown carts still drop in.</h3>
+    <p>A cart that is not in your pack shows as a drawing of the cartridge, gray, black or clear like the real shells, with the title from its header. A plays it. The core notes the header on the card, and the companion app finds its box art on the next sync.</p>
+  </div>
+</section>
+
+<section class="story" id="legend">
+  <div class="story-media">
+    <div class="swap-stage screen" data-swap>
+      <img src="assets/legend_flow.png" alt="The cover flow with the legend line under it: Grid, Options, Play, Favorites, Letter" width="640" height="576" data-beat="0" class="is-on">
+      <img src="assets/legend_grid.png" alt="The grid view with its legend: Flow, Options, Play, Favorites, Letter" width="640" height="576" data-beat="1">
+      <img src="assets/legend_options.png" alt="A game's options with the legend: Choose, OK, Back" width="640" height="576" data-beat="2">
+      <img src="assets/legend_cart.png" alt="The cartridge view with the legend: Play cart, Options, Favorites" width="640" height="576" data-beat="3">
+    </div>
+  </div>
+  <div class="story-text">
+    <div class="beat reveal" data-beat="0">
+      <h2>You never guess what X does.</h2>
+      <p>A legend on every screen, drawn as the Pocket's own button diamond with the button in question lit, the D-pad with its live arms, the Select pill, the two shoulders. One word each.</p>
+    </div>
+    <div class="beat reveal" data-beat="1">
+      <h3>It changes with the screen.</h3>
+      <p>In the grid, Y reads Flow. The rest stays where it was.</p>
+    </div>
+    <div class="beat reveal" data-beat="2">
+      <h3>In a game's options.</h3>
+      <p>Choose, OK, Back. X opens them: Play, Start over, favorite on or off.</p>
+    </div>
+    <div class="beat reveal" data-beat="3">
+      <h3>With a cartridge in.</h3>
+      <p>Play cart, Options, Favorites. The legend never lists a button that does nothing.</p>
+    </div>
+  </div>
+</section>
+
+<section class="story story-flip" id="favorites">
+  <div class="story-media">
+    <div class="screen">
+      <video class="lazy-video" muted loop playsinline preload="none" data-src="assets/live-favorites.mp4" aria-label="Starring a game on the Pocket: the favorites list changes at once"></video>
+    </div>
+  </div>
+  <div class="story-text">
+    <div class="beat reveal">
+      <h2>Star it on the Pocket. The list changes at once.</h2>
+      <p>Unstar a game in Favorites and its cover lifts out while the gap closes. Star one in All games and it joins the end of Favorites. The change is written to the card, and the companion app applies it on the next sync.</p>
+    </div>
+    <div class="beat reveal">
+      <h3>Pause, Home, and back to the frame.</h3>
+      <p>L in a game pauses it. Home writes the battery save and a suspend point, and returns to the covers. Pick the game again and it resumes on the exact frame you left. Saves live in the usual place, so the ones you have carry over.</p>
+    </div>
+  </div>
+</section>
+
+<section class="companion" id="companion">
+  <div class="section-head reveal">
+    <h2>A Mac app builds the pack.</h2>
+    <p>Point it at your ROM folder. It names every game by checksum against the No-Intro database, finds the box art, and writes the pack and the ROMs to the card.</p>
+  </div>
+  <figure class="shot shot-wide reveal">
+    <img src="assets/companion-library.jpg" alt="The companion app library: 702 games with box art, each marked exact" width="1600" height="1000" loading="lazy">
+  </figure>
+  <div class="companion-grid">
+    <figure class="shot reveal">
+      <img src="assets/companion-picker.jpg" alt="The cover picker: alternative box art for a game, with a preview of the 128 pixel center and 80 pixel list crops" width="1600" height="1000" loading="lazy">
+      <figcaption><strong>Pick the art.</strong> Click a cover to choose another from libretro thumbnails, search, or drop in your own image. A preview shows the 128 pixel center and the 80 pixel list crop as the Pocket will draw them.</figcaption>
+    </figure>
+    <figure class="shot reveal">
+      <img src="assets/companion-sync.jpg" alt="The sync plan: 702 to copy, nothing to remove, each save matched to its ROM" width="1600" height="1000" loading="lazy">
+      <figcaption><strong>Sync without fear.</strong> A plan shows what will be copied, removed and kept, and checks free space first. ROMs are copied, checked by CRC, then renamed into place. Battery saves are never touched.</figcaption>
+    </figure>
+  </div>
+  <div class="companion-more reveal">
+    <p>Favorites you star in the app come first on the Pocket. Stars you change on the Pocket come back on the next sync. ROMs already on the card are adopted under their names, so their saves keep working.</p>
+    <a class="btn btn-secondary" href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker/companion">Companion app</a>
+  </div>
+</section>
+
+<section class="how" id="how">
+  <div class="section-head reveal">
+    <h2>For the curious.</h2>
+    <p>Box art becomes a pack on the card. The core streams it into the FPGA's memory and draws it with its own video timing, two lines ahead of the beam.</p>
+  </div>
+  <figure class="pipeline reveal">
+    <img src="assets/pipeline.svg" alt="The pipeline: box art and the companion app on the Mac produce covers.bin; the SD card holds ROMs, the pack, saves and the core; inside the FPGA the cover flow launches a game on the Game Boy Color core, and L pauses it" width="960" height="430" loading="lazy">
+  </figure>
+  <dl class="numbers">
+    <div class="reveal"><dt>320 by 288</dt><dd>The menu's own resolution and scaler mode, drawn on the fly from SDRAM so covers can grow, shrink and slide every frame.</dd></div>
+    <div class="reveal"><dt>59.7 Hz</dt><dd>The Game Boy's refresh. Every move, morph and drop is eased per frame at that rate.</dd></div>
+    <div class="reveal"><dt>128 covers</dt><dd>Live in the SDRAM cache above the cartridge ROM area. Game g sits in slot g mod 128, and a cover may only evict one further from the selection.</dd></div>
+    <div class="reveal"><dt>2047 games</dt><dd>The most a library can hold. Titles and paths are read from the card when a game is selected.</dd></div>
+    <div class="reveal"><dt>45 KB</dt><dd>Per cover in the pack: a 128 by 128 center and an 80 by 80 preview in 16 bit color, fitted on a blurred copy of itself.</dd></div>
+    <div class="reveal"><dt>2 MB/s</dt><dd>From the card, about 29 ms a cover. Words wait in a FIFO and land in the SDRAM cycles the line fetcher leaves free, so the menu keeps drawing while covers load.</dd></div>
+    <div class="reveal"><dt>86 to 93%</dt><dd>Of the FPGA in use, with timing closed on all four corners.</dd></div>
+    <div class="reveal"><dt>Verilator</dt><dd>Every scenario runs as a simulation with a fake Pocket host and a model of the SDRAM. Rest frames match a Python model pixel for pixel. The footage on this page comes from those runs.</dd></div>
+  </dl>
+</section>
+
+<section class="table-section" id="features">
+  <div class="section-head reveal">
+    <h2>Side by side.</h2>
+  </div>
+  <table class="features reveal">
+    <thead>
+      <tr><th scope="col"></th><th scope="col">Stock core</th><th scope="col">Vitrine</th></tr>
+    </thead>
+    <tbody>
+      <tr><th scope="row">Box art</th><td class="no">No, file names</td><td class="yes">Full color covers at 320 by 288</td></tr>
+      <tr><th scope="row">Favorites</th><td class="no">No</td><td class="yes">Opens on them</td></tr>
+      <tr><th scope="row">Grid view</th><td class="no">No</td><td class="yes">Four by two, Y to morph</td></tr>
+      <tr><th scope="row">Letter jumps</th><td class="no">No</td><td class="yes">L and R, Up and Down</td></tr>
+      <tr><th scope="row">Cartridge recognition</th><td class="no">Plays the cart, nothing more</td><td class="yes">Drops in on its own cover</td></tr>
+      <tr><th scope="row">Suspend and resume</th><td class="part">Through the Pocket's menu</td><td class="yes">Home, back to the exact frame</td></tr>
+      <tr><th scope="row">Button legend</th><td class="no">No</td><td class="yes">On every screen</td></tr>
+      <tr><th scope="row">Live favorites</th><td class="no">No</td><td class="yes">Star on the Pocket, changes at once</td></tr>
+      <tr><th scope="row">Companion app</th><td class="no">No</td><td class="yes">Checksums, box art, safe sync</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="credits" id="credits">
+  <div class="section-head reveal">
+    <h2>Built on good work.</h2>
+  </div>
+  <ul class="credit-list reveal">
+    <li><strong>budude2's openFPGA GBC core</strong><span>The core Vitrine lives in. The menu, saves, suspend, cartridge detection and the companion app are new; the rest is theirs.</span></li>
+    <li><strong>The MiSTer Gameboy core</strong><span>The emulation itself, by its contributors, which budude2 ported to the Pocket.</span></li>
+    <li><strong>libretro thumbnails</strong><span>The community box art scans the companion app fetches. Covers are not in the repository.</span></li>
+    <li><strong>Inter</strong><span>The typeface on this page and in the menu, where titles are drawn in Inter at 13 pixels and the legend at 9.</span></li>
+  </ul>
+  <p class="legal reveal">Game Boy, Game Boy Color and Analogue Pocket are trademarks of their owners. Bring your own ROMs and BIOS. If you own something shown here and want it removed, open an issue and it will come down.</p>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-row">
+    <span class="footer-mark">Vitrine</span>
+    <nav class="footer-links">
+      <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">Get Vitrine</a>
+      <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker/companion">Companion app</a>
+      <a href="https://github.com/maxsorto">maxsorto on GitHub</a>
+    </nav>
+  </div>
+  <p class="footer-legal">Not affiliated with Analogue or Nintendo. The cover picker module, the testbenches and the tools are MIT. The core keeps its original terms.</p>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

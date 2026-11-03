@@ -1,10 +1,12 @@
-<p align="center"><img src="docs/images/hero.png" alt="The cover flow menu on the Pocket next to the companion app's library" width="100%"></p>
+<p align="center"><img src="docs/images/hero.png" alt="Vitrine on the Pocket next to the companion app's library" width="100%"></p>
 
-# Cover Flow for the Analogue Pocket
+# Vitrine
 
-A box-art game menu that lives inside the Game Boy Color core on the Analogue Pocket, and a Mac app that fills it. Turn the core on and you land on your library as full-color covers at 320x288: the selected game in the middle, its neighbors either side, reflections on the floor and the title underneath. Libraries of hundreds of games stream from the card as you scroll; it opens on your favorites, Select switches to every game A to Z where Up and Down jump by letter, and X opens a game's options. Press A and the game boots with its battery save loaded. Press L in game to pause, then Resume, or go Home to the covers with the game suspended. Pick it again later and it comes back on the exact frame you left. Push a cartridge into the slot and its cover drops into the menu from the top, shoving your list out of the way, and seats with a ring of light, a shine across the box and a glow in its colors; A plays the real cart. A cart that isn't in your library shows as a cartridge with its own title, and the next sync finds its box art. On the Mac, the companion app names every ROM in your library by checksum, finds its box art, and syncs it all to the SD card.
+**Every game, face out.** Vitrine is a box-art game menu that lives inside the Game Boy Color core on the Analogue Pocket, and a Mac app that fills it. Turn the core on and you land on your library as full-color covers at 320x288: the selected game in the middle, its neighbors either side, reflections on the floor and the title underneath. Libraries of hundreds of games stream from the card as you scroll; it opens on your favorites, Select switches to every game A to Z where L and R jump by letter, and X opens a game's options. Press A and the game boots with its battery save loaded. Press L in game to pause, then Resume, or go Home to the covers with the game suspended. Pick it again later and it comes back on the exact frame you left. Push a cartridge into the slot and its cover drops into the menu from the top, shoving your list out of the way, and seats with a ring of light, a shine across the box and a glow in its colors; A plays the real cart. A cart that isn't in your library shows as a cartridge with its own title, and the next sync finds its box art. On the Mac, the companion app names every ROM in your library by checksum, finds its box art, and syncs it all to the SD card.
 
-<p align="center"><b>Get it: <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">the cover-picker branch</a></b><br>Analogue Pocket, openFPGA. Game Boy and Game Boy Color games.<br><b>Fill it: <a href="companion/">the companion app</a></b> (in <code>companion/</code>), runs on your Mac in the browser.</p>
+<p align="center"><b>Get it: <a href="https://github.com/maxsorto/openfpga-GBC/tree/cover-picker">the cover-picker branch</a></b><br>Analogue Pocket, openFPGA. Game Boy and Game Boy Color games.<br><b>Fill it: <a href="companion/">the companion app</a></b> (in <code>companion/</code>), runs on your Mac in the browser.<br><b>See it: <a href="https://vitrine-pocket.vercel.app">vitrine-pocket.vercel.app</a></b> (the site lives in <code>site/</code>).</p>
+
+Vitrine is under development and not announced yet: the branch is the release for now.
 
 This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gameboy core. The emulation is theirs. The menu, saves, suspend, cartridge detection and the companion app are new. No ROMs, BIOS files or box art are in this repo.
 
@@ -43,14 +45,15 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 |---|---|
 | Browse | Left and Right glide the covers over 8 frames with an ease-out. Hold to scroll. Long titles scroll as a marquee. |
 | Favorites | The menu opens on your favorites, and only your favorites. After the last one comes an All games cover; A on it opens the full list. |
-| All games | Every game once, A to Z. Up and Down, or L and R, jump to the previous and next letter, which shows under the title. |
+| All games | Every game once, A to Z. L and R jump to the previous and next letter, which shows under the title. |
+| Legend | A third line under the position bar says what the buttons do right now: the face buttons as the Pocket's diamond with the one in question lit, the D-pad with its live arms, the Select pill, the two shoulders, each with one word. It changes with the context (list, grid, options, cartridge) and never lists a button that does nothing. |
 | Grid | Y rearranges the same covers into a grid of eight, 4 by 2, with the selection drawn larger and bright over its cell. The centre cover shrinks into its cell as the others fade in, over 12 frames. Left and Right walk the list cell by cell, wrapping at row ends; Up and Down move a row, and the rows scroll when the selection leaves the window; L and R jump by letter. Y or B morphs back to the cover flow. The grid stays on across Favorites and All games. |
-| Select | Steps through Favorites, All games, and the inserted Cartridge (when there is one). Each keeps your place. The mode shows under the title. |
+| Select | Steps through the Cartridge (the inserted one, or an empty slot drawing when there is none), Favorites, and All games. Each keeps your place. The mode shows under the title. |
 | Cartridge | The core reads the cart's header at boot and about once a second while the menu is open. If it matches a game in your pack (the exact revision, or failing that the same internal title), that cover drops in from the top as the list slides away below, seats with a small bounce, a ring of light, a shine and a click, and keeps a soft glow in the cover's own colors. A boots the real cart with the save on its own battery. Left, Right or Select lift it away and bring your list back where you left it. Pull the cart and the same happens, with CARTRIDGE REMOVED. |
 | Unknown carts | A cart that isn't in your library still drops in, as a drawing of its cartridge (gray, black or clear, like the real shells) with the title from its header, and A plays it. The core notes its header in `/Saves/gbc/common/carts.cfg`; on the next sync the companion app identifies the game and adds its box art, so the next time it shows its real cover. |
-| Options | X opens the selected game's options: Play, Start over (drops a suspend point and boots fresh), favorite on or off, Back. Favorites changed on the Pocket go to `favorites.cfg` and the companion app applies them on the next sync. |
-| Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. |
-| Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. |
+| Options | X opens the selected game's options: Play, Start over (drops a suspend point and boots fresh), favorite on or off, Back. A star counts at once: unstarring in Favorites lifts the cover out and closes the gap, starring in All games adds the game to the end of Favorites. The changes also go to `favorites.cfg` and the companion app applies them on the next sync. |
+| Launch | A opens the ROM, streams it into cartridge memory, loads its `.sav` and boots it. The cover grows toward the screen as the menu fades, and shrinks back into place on Home. |
+| Pause | L in game freezes the Game Boy, dims the picture and shows Resume and Home with a short chime. B or L again resumes. The same panel works while a real cartridge plays; Home then returns to its cover, since the save lives on the cart. |
 | Home | Writes the battery save, writes a save state to a `.sus` file next to it, and goes back to the covers. |
 | Resume | Launching a game with a `.sus` file restores that save state, then empties the file so it is used once. |
 | Saves | Uses the same `/Saves/gbc/common/<game>.sav` files as the original core, so existing saves carry over. |
@@ -113,6 +116,8 @@ Controls in the menu: Left and Right to browse, Up and Down to jump by letter, S
 - **Cartridges.** Cart power is on while the core runs (core.json `cartridge_adapter` 0x41000000). At boot, with the Game Boy held in reset, the core reads header bytes 0x134 to 0x14F over the cart bus, checks the header checksum, then scans the pack's fingerprint table: first for the same global and header checksums, then for the same 11-byte title CRC. When a game cart is in and the core isn't playing it, every cart pin is held at bus idle (address 0, /RD, /WR and /CS high), so a powered cart never sees stray writes. Launching the cart switches the Game Boy to physical cartridge mode.
 - **Unknown carts.** The pack ends with three default cartridge images. Exact black (RGB565 0x0000) in them is transparent, so the cart's silhouette sits on the glow. A cart that matches nothing gets the image for its header's Color flag and its title from header bytes 0x134 onward. Its header is appended to `carts.cfg` (data slot 105): the record first, then the count, so a half-written file is never misread.
 - **Transitions.** The cartridge sits above the list. Going in, both rows move together 256 lines apart, so no screen line ever has two covers in one column, and the line fetcher simply fetches each cover at its new height. The covers that leave come from a snapshot taken as the transition starts; the ones that arrive are the live selection, and the move waits until the arriving cover is in the cache. The glow and the ring are computed per pixel from the squared distance to the cover (no square root), dithered with a 4x4 Bayer matrix. The curves are generated by `tools/anim_model.py`, which also renders a preview of the whole sequence with the same integer math.
+- **The legend.** A third hi-res text line laid out like the title and the platform line, in a 9 px Inter whose glyph codes 1 to 14 hold the button pictures (`tools/make_legend_font.py` draws them with the font, so a hint is just a string). The FSM builds the line's string from the context into a small RAM, 64 characters at most, and lays it out whenever the context changes.
+- **Live favorites.** Favorites mode reads its positions from a list in RAM: the pack's favorites block minus the games unstarred this session, plus the ones starred, in order. Every entry carries its favorites position and its A to Z position (written by the app), so the core knows which pack favorite an unstar refers to, and `favorites.cfg` records both positions (format FAV2) so the list survives a power cycle until the next sync.
 - **Grid view.** The grid is not a second renderer. Cells sit on a 76 by 94 lattice above the title block, so a pixel's cell comes from a few compares on x and y rather than a rectangle test per cover, and the line fetcher reads the four cells of whichever row a line crosses before the free covers, so the selection (an ordinary free cover at 80 px) lands on top. The cache's prefetch list becomes the three lattice rows, then the row below, then the row above. A line never fetches more than about 370 words of the 468 it has. The move, scroll and morph curves come from `tools/grid_model.py`, which also renders the preview video with the same integer math, and the simulation's rest frames match it pixel for pixel.
 - **Video.** The menu has its own 320x288 timing on its own scaler mode. A line fetcher reads each cover from SDRAM two lines ahead, scaled on the fly, so covers can grow, shrink and slide every frame. The title uses Inter at 13 px with antialiasing. The game switches back to the Game Boy's 160x144 when it launches.
 - **Opening files.** Paths are copied from the pack straight into the 0x0192 parameter struct. The struct answers bridge reads one transaction late, which is how every APF bridge device behaves. Getting that wrong returns "malformed path".
@@ -156,21 +161,31 @@ cp -R stage/. /Volumes/Pocket/
 
 A full compile takes about ten minutes. `ap_core.qsf` limits Quartus to one worker because parallel fitting deadlocks under emulation.
 
+## Releasing it
+
+What has to be true before Vitrine goes into the openFPGA cores inventory, which Pocket Sync and the other updaters read:
+
+- A GitHub Release on this repo with one zip asset in SD card layout: `Cores/maxsorto.GBC/` (the core files from `tools/package_core.sh`) and `Platforms/gbc.json`. No covers.bin, ROMs or BIOS files in it.
+- A real semver in `core.json` (today it is `1.4.0-cover2`; the companion app keys the pack format on the `-coverN` suffix, so both change together).
+- `LICENSE` and `NOTICE` files: the emulation is the MiSTer Gameboy core (GPL), budude2's fork has no license file of its own, and the menu, tools and the companion app are MIT.
+- A first run screen in the core for a card with no pack (today the core falls back to the plain GBC menu).
+- The companion app as a second release asset people can double-click, not a repo checkout.
+- Then an "Add Core" issue on [openfpga-cores-inventory/analogue-pocket](https://github.com/openfpga-cores-inventory/analogue-pocket) pointing at the repo; the inventory watches the releases from there.
+
 ## What's done and what's next
 
 Done:
 - Cover flow menu at 320x288 with full-color covers, reflections, eased animation, marquee titles and a position bar
 - Streaming covers for libraries up to 2047 games (700+ verified on hardware)
-- Letter jumps, a favorites mode, and a per-game options menu with Start over and favorites saved on the Pocket
+- Letter jumps on L and R, a favorites mode, and a per-game options menu with Start over and favorites saved on the Pocket
 - Launching from the menu, battery saves in the usual place, pause, Home and suspend to the exact frame
 - Cartridges: the inserted cart drops in on its own cover with a seating animation and plays with its own save; unknown carts show as a cartridge and get their box art on the next sync
 - A grid view, morphing from the cover flow and back, with letter jumps on L and R in both views
+- A button legend on every screen, favorites that change on the Pocket at once, Home while a cartridge plays, an empty slot view, and a zoom into and out of a game
 - An on-card debug log and diagnostic squares for hardware bugs
 - The companion app: library by checksum, automatic box art, favorites, a sync plan that protects saves, two themes
 
 Next:
-- Favorites that update on the Pocket: starring or unstarring a game changes Favorites mode right away, before the next sync
-- Home while playing a real cartridge
 - Play history (recently played first) and a settings screen
 - Copy a cartridge's save to the SD card from the cart's options, so the ROM version continues it
 - A web version of the companion app for Windows and Linux, and a release for the openFPGA cores inventory

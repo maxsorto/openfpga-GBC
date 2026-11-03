@@ -154,11 +154,18 @@ module tb_grid;
   task frames(input integer n); begin repeat (n) @(posedge hr_vs); end endtask
   task probe_now; begin force dut.rp_tmr = 28'd74_000_000; @(posedge clk); @(posedge clk); release dut.rp_tmr; end endtask
   task wait_vt; begin wait (dut.vt_busy); wait (!dut.vt_busy); end endtask
+  integer dbgn = 0;
+  always @(posedge clk) begin
+    if (dut.state == 16 && dbgn < 80) begin dbgn = dbgn + 1; $display("MAPDONE frame %0d line2 %0d line3 %0d lonly %0d lf %0d mp %0d htw %0d hsw %0d lgw %0d is_gb %0d k %0d", frame, dut.line2, dut.line3, dut.lonly, dut.lf, dut.mp, dut.htw, dut.hsw, dut.lgw, dut.is_gb, dut.k); end
+    if (dut.state == 127 && dbgn < 80) begin dbgn = dbgn + 1; $display("LB0 frame %0d lonly %0d", frame, dut.lonly); end
+  end
   task settle; begin wait (!dut.g_anim && !dut.anim && dut.state == 23); frames(10); end endtask
   task key(input integer bit_); begin cont1_key[bit_] = 1; frames(2); cont1_key[bit_] = 0; frames(2); end endtask
   task show(input [8*16-1:0] what);
-    begin $display("MARK %0s frame %0d idx %0d grid %0d top %0d pop %0d %0d %0d lat_y %0d skip %0d b %0d/%0d",
-                   what, frame, dut.idx, dut.grid, dut.g_top, dut.p_x, dut.p_y, dut.p_s, dut.lat_y, dut.lat_skip, dut.lat_b, dut.side_b); end
+    begin $display("MARK %0s frame %0d idx %0d grid %0d top %0d pop %0d %0d %0d lat_y %0d skip %0d b %0d/%0d | legend lgw %0d key %h built %h lonly %0d line3 %0d",
+                   what, frame, dut.idx, dut.grid, dut.g_top, dut.p_x, dut.p_y, dut.p_s, dut.lat_y, dut.lat_skip, dut.lat_b, dut.side_b,
+                   dut.lgw, dut.leg_key, dut.leg_built, dut.lonly, dut.line3);
+          $display("  lstr codes: %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d  widths %0d %0d %0d %0d %0d %0d", dut.lstr_m[0], dut.lstr_m[1], dut.lstr_m[2], dut.lstr_m[3], dut.lstr_m[4], dut.lstr_m[5], dut.lstr_m[6], dut.lstr_m[7], dut.lstr_m[8], dut.lstr_m[9], dut.lstr_m[10], dut.lstr_m[11], dut.wrom3[dut.lstr_m[0]], dut.wrom3[dut.lstr_m[1]], dut.wrom3[dut.lstr_m[2]], dut.wrom3[dut.lstr_m[3]], dut.wrom3[dut.lstr_m[4]], dut.wrom3[dut.lstr_m[5]]); end
   endtask
   initial begin
     force dut.boot_timer = 27'd36_999_990; #100 core_ready = 1; #2000 release dut.boot_timer;

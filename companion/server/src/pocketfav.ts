@@ -3,9 +3,12 @@
  * /Saves/gbc/common/favorites.cfg, a 4096 byte file, little-endian:
  *
  *   0   "FAV1"
- *   4   u16 version = 1
+ *   4   u16 version = 1 (FAV2 files may say 2)
  *   6   u16 n, records used
  *   8   n records of 8 bytes: u32 CRC32 of the ROM | u8 state (1 favorite, 0 not) | 3 pad
+ *
+ * The newer core writes "FAV2" with 16 byte records instead: u32 CRC32 | u32 state |
+ * u16 fav_pos | u16 az_pos | 4 zero. Both are read; only the CRC and state are used.
  *   the rest is zero
  *
  * Later records win for the same CRC. Sync applies them to the app's choices and
@@ -21,6 +24,7 @@ import { PACK_PLATFORM } from './config.js';
 export const FAV_FILE_BYTES = 4096;
 const HEAD = 8;
 const RECORD = 8;
+const RECORD_V2 = 16;
 export const FAV_MAX_RECORDS = (FAV_FILE_BYTES - HEAD) / RECORD;
 
 export interface PocketFavorites {
@@ -41,15 +45,21 @@ export function favoritesPath(card: string): string {
 export function parseFavorites(buf: Buffer): Omit<PocketFavorites, 'file' | 'sha'> | null {
   // The core creates the file as zeros before it first writes to it: no changes yet.
   if (buf.length > 0 && buf.every((b) => b === 0)) return { changes: [], records: 0 };
-  if (buf.length < HEAD || buf.toString('latin1', 0, 4) !== 'FAV1') return null;
-  if (buf.readUInt16LE(4) !== 1) return null;
+  if (buf.length < HEAD) return null;
+  // FAV1: 8 byte records (crc u32, state u8, 3 pad). FAV2: 16 byte records (crc u32,
+  // state u32, fav_pos u16, az_pos u16, 4 zero); only crc and state are used here.
+  const magic = buf.toString('latin1', 0, 4);
+  const size = magic === 'FAV1' ? RECORD : magic === 'FAV2' ? RECORD_V2 : 0;
+  if (!size) return null;
+  const version = buf.readUInt16LE(4);
+  if (!(version === 1 || (size === RECORD_V2 && version === 2))) return null;
   const n = buf.readUInt16LE(6);
-  if (n > FAV_MAX_RECORDS || HEAD + n * RECORD > buf.length) return null;
+  if (HEAD + n * size > buf.length) return null;
   const state = new Map<string, boolean>();
   for (let i = 0; i < n; i++) {
-    const o = HEAD + i * RECORD;
+    const o = HEAD + i * size;
     const crc = buf.readUInt32LE(o).toString(16).toUpperCase().padStart(8, '0');
-    const s = buf.readUInt8(o + 4);
+    const s = size === RECORD ? buf.readUInt8(o + 4) : buf.readUInt32LE(o + 4);
     if (s > 1) return null;
     state.delete(crc); // keep the order of the last record
     state.set(crc, s === 1);

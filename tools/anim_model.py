@@ -194,6 +194,11 @@ def render(sc):
         reg = out[y0:y0 + 16, st:st + wdt]
         colr = np.array(colr)
         out[y0:y0 + 16, st:st + wdt] = np.where((al > 0)[..., None], mixw(reg, colr, al[..., None]), reg)
+    # the button legend (tools/legend_model.py), when the scene names a context
+    if sc.get('leg'):
+        import legend_model as lm
+        ctx, nxt, letters = sc['leg']
+        out = lm.draw(out, lm.legend_string(ctx, nxt, letters), sc.get('lvl', 8))
     # position
     cnt, idx = sc.get('cnt', 1), sc.get('idx', 0)
     HD = 256

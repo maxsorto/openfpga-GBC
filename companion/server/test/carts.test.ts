@@ -104,7 +104,7 @@ const { loadDats } = await import('../src/dat.js');
 const { makePlan } = await import('../src/plan.js');
 const { runSync } = await import('../src/sync.js');
 const { readPackSummary, packWriter, defaultArtOffset, fingerprintTableOffset } = await import('../src/pack.js');
-const { placeholderCart, encodeKeyed, CART_ACCENTS, hasCartArtFiles } = await import('../src/cartart.js');
+const { placeholderCart, encodeKeyed, CART_ACCENTS, hasCartArtFiles, emptySlotBlob } = await import('../src/cartart.js');
 const { accentOf } = await import('../src/accent.js');
 const { crc32 } = await import('../src/roms.js');
 
@@ -296,7 +296,7 @@ test('sync: identified carts become cartridge-only entries after the list, then 
   assert.equal(buf.length, packWriter(7).expectedSize(5));
   // CRT1 at 96: default art offset, list count, flags (carts.cfg path present), accents, 0.
   assert.equal(buf.toString('ascii', 96, 100), 'CRT1');
-  assert.deepEqual(s.carts, { artOffset: defaultArtOffset(5), listCount: 3, flags: 1, accents: [CART_ACCENTS.dmg, CART_ACCENTS.dual, CART_ACCENTS.cgb] });
+  assert.deepEqual(s.carts, { artOffset: defaultArtOffset(5), listCount: 3, flags: 13, accents: [CART_ACCENTS.dmg, CART_ACCENTS.dual, CART_ACCENTS.cgb] });
   assert.equal(buf.readUInt16LE(114), 0);
   assert.equal(s.carts!.artOffset % 4096, 0);
   // The letter index covers only the browsable list.
@@ -328,7 +328,11 @@ test('sync: identified carts become cartridge-only entries after the list, then 
   const art0 = buf.subarray(s.carts!.artOffset, s.carts!.artOffset + 45568);
   if (!hasCartArtFiles()) assert.ok(art0.subarray(0, 128 * 128 * 2).equals(encodeKeyed(placeholderCart('dmg', 128))));
   assert.equal(art0.readUInt16LE(0), 0, 'the corner of the cart image is transparent');
-  assert.equal(buf.length, s.carts!.artOffset + 3 * 65536);
+  // Then image 3, the empty slot (flags bit 2), ending the file (no favorites, so no tile).
+  assert.ok(buf.subarray(s.carts!.artOffset + 3 * 65536, s.carts!.artOffset + 3 * 65536 + 45568).equals(emptySlotBlob()!));
+  assert.equal(buf.length, s.carts!.artOffset + 4 * 65536);
+  // Cart-only entries have no favorites or A to Z place.
+  assert.deepEqual([s.favPos[3], s.azPos[3], s.favPos[4], s.azPos[4]], [0xffff, 0xffff, 0xffff, 0xffff]);
 });
 
 test('next sync: carts saved in the app stay in the pack, and nothing is applied twice', async () => {

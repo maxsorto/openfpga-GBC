@@ -10,7 +10,10 @@ Layout (little-endian):
          read straight into the core's 0x0192 parameter struct
   then   one more 256 B path struct: the debug log, /Saves/<platform>/common/picker.log
 v7 (--v7): ver = 7, up to 2047 games, entries are title char[40] | flags u8 | pad u8 | accent u16 | size u32 |
-crc32 u32 | path char[76], and each blob is padded to 65536 B so the core can stream any cover by index.
+crc32 u32 | path char[72] (cut to 71 plus a NUL) | fav_pos u16 | az_pos u16, and each blob is padded to 65536 B so
+the core can stream any cover by index. fav_pos (bytes 124, 125): the game's place in the favorites section, 0 based,
+on both entries of a favorite, else 0xFFFF. az_pos (bytes 126, 127): the index of the game's A to Z entry (its own
+index there; its twin's on the favorites copy).
 Entry flags: bit 0 = original Game Boy, bit 1 = favorite (--favorite), bit 2 = cartridge only (never set here).
 accent = RGB565 color of the cover, for the core's glow (see accent()).
 After the picker.log path struct, v7 has two more: /Saves/<platform>/common/favorites.cfg, then carts.cfg.
@@ -18,8 +21,9 @@ v7 unrecognized carts: at file offset 96, "CRT1" | u32 default art offset | u16 
 carts.cfg struct present) | 3 x u16 default art accents | u16 0. list_count is the browsable menu; the app adds
 cartridge-only entries after it (this tool does not, so list_count = count). The default art (gray DMG, black
 dual, clear GBC-only cart) is 3 blobs at a 65536 stride after the FPR2 table, 4096 aligned, ending the file;
-RGB565 0x0000 is transparent there. Art is read from companion/server/assets/carts/{dmg,dual,cgb}-{128,80}.png,
-or drawn as a placeholder when those are missing (same drawing as the app). CRT1 flags bit 1: a fourth image follows,
+RGB565 0x0000 is transparent there. CRT1 flags bit 2: image 3 is the empty slot (empty-128/80.png, keyed the same),
+for the core's "No cartridge" view; written when those PNGs exist. Bit 3 (always set): entries carry fav_pos and az_pos. The All games tile then follows as image 4. Art is read from companion/server/assets/carts/{dmg,dual,cgb}-{128,80}.png,
+or drawn as a placeholder when those are missing (same drawing as the app). CRT1 flags bit 1: one more image follows,
 the All games tile Favorites mode shows after the favorites (opaque, 0x0000 written as 0x0001); written whenever
 there are favorites (--favorite). It is a 3 x 3 mosaic of covers from the A to Z list with a dark band and the
 label from companion/server/assets/tiles/all-games-384.png (made by make_tile_label.py).
@@ -202,6 +206,11 @@ def main():
         blob_of[rom] = (b"".join(struct.pack("<H", rgb565(p)) for p in c.getdata()) +
                         b"".join(struct.pack("<H", rgb565(p)) for p in t.getdata()))
         if a.v7: accent_of[rom] = accent(c)
+    # Where each game sits: its place in the favorites section, and the index of its A to Z entry.
+    fav_pos, az_pos = {}, {}
+    for i, (rom, sec) in enumerate(menu):
+        if sec == "favorite" and rom not in fav_pos: fav_pos[rom] = len(fav_pos)
+        if sec == "az" and rom not in az_pos: az_pos[rom] = i
     entries, paths, blobs = [], [], []
     for rom, _ in menu:
         stem = stem_of(rom); path = f"/Assets/{a.platform}/common/{rom}"; rp = os.path.join(a.roms, rom)
@@ -212,7 +221,8 @@ def main():
             paths.append(q.encode().ljust(256, b"\0"))
         if a.v7:
             crc = zlib.crc32(open(rp, "rb").read()) & 0xFFFFFFFF
-            entries.append(struct.pack("<40sBxHII76s", pack_title(stem), flags, accent_of[rom], os.path.getsize(rp), crc, path.encode()[:75]))
+            entries.append(struct.pack("<40sBxHII72sHH", pack_title(stem), flags, accent_of[rom], os.path.getsize(rp), crc, path.encode()[:71],
+                                       fav_pos.get(rom, 0xFFFF), az_pos.get(rom, 0xFFFF)))
         else:
             entries.append(struct.pack("<40sB3xI80s", stem.encode("ascii", "replace")[:39], flags, os.path.getsize(rp), path.encode()[:79]))
         blobs.append(blob_of[rom])
@@ -225,11 +235,13 @@ def main():
     if a.v7 and fav_count:  # Favorites mode's closing cover, after the three cartridges
         az = [r for r, sec in menu if sec == "az"]
         tile = all_games_tile([art_of[r] for r in tile_picks(az, favset, lambda r: stem_of(r).lower() in covers)])
+    # The empty slot (the core's "No cartridge" view): image 3, when its art is there.
+    empty = cart_blob("empty") if all(os.path.exists(os.path.join(CART_ART, f"empty-{S}.png")) for S in (CEN, TH)) else None
     reserved = bytes(512)
     if a.v7:
         reserved = bytearray(index_block([stem_of(r) for r, _ in menu], fav_count=fav_count))
         reserved[FPR_AT - 16:FPR_AT - 16 + 12] = struct.pack("<4sIHH", b"FPR2", table_at, n, 0)
-        reserved[CRT_AT - 16:CRT_AT - 16 + 20] = struct.pack("<4sIHH3HH", b"CRT1", art_at, n, 1 | (2 if tile else 0), *CART_ACCENTS, 0)
+        reserved[CRT_AT - 16:CRT_AT - 16 + 20] = struct.pack("<4sIHH3HH", b"CRT1", art_at, n, 1 | (2 if tile else 0) | (4 if empty else 0) | 8, *CART_ACCENTS, 0)
     with open(a.out, "wb") as f:
         f.write(struct.pack("<4sHHHH4x", b"GBCV", 7 if a.v7 else 6, n, CEN, TH))
         f.write(bytes(reserved))
@@ -244,7 +256,8 @@ def main():
             f.write(b"".join(fingerprint(os.path.join(a.roms, r)) for r, _ in menu))
             f.write(bytes(art_at - f.tell()))
             f.write(b"".join(cart_blob(k).ljust(STRIDE7, b"\0") for k in CART_KINDS))
-            if tile: f.write(tile.ljust(STRIDE7, b"\0"))
+            if empty: f.write(empty.ljust(STRIDE7, b"\0"))  # image 3: the empty slot
+            if tile: f.write(tile.ljust(STRIDE7, b"\0"))  # then the All games tile
     print(f"wrote {a.out}: {n} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()

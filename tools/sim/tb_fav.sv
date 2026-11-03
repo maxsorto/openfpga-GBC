@@ -12,7 +12,7 @@ module tb_fav;
   reg clk_vid = 0; always #74.5 clk_vid = ~clk_vid; // 6.71 MHz
   reg clk_sys = 0; always #14.9 clk_sys = ~clk_sys; // 33.55 MHz
   reg [31:0] cont1_key = 0; reg core_ready = 0;
-  reg [7:0] pack [0:1048575];
+  reg [7:0] pack [0:2097151];
   initial $readmemh("fav.hex", pack);
   reg pack_wr = 0; reg [27:0] pack_addr = 0; reg [15:0] pack_data = 0;
   wire t_read, t_open, t_write; wire [15:0] t_id; wire [31:0] t_off, t_bridge, t_len;
@@ -118,6 +118,7 @@ module tb_fav;
       $display("WRITE slot %0d off %0d len %0d: %h %h %h %h %h %h %h %h", w_id, w_off, w_len, wcap[0], wcap[1], wcap[2], wcap[3], wcap[4], wcap[5], wcap[6], wcap[7]);
       if (w_id == 105 && w_off == 16) begin crl_rec = {wcap[0], wcap[1], wcap[2], wcap[3], wcap[4], wcap[5], wcap[6]}; crl_recs = crl_recs + 1; end
       if (w_id == 105 && w_off == 0) begin crl_head = {wcap[0], wcap[1]}; crl_heads = crl_heads + 1; end
+      if (w_id == 104) begin fav_head = wcap[0]; fav_writes = fav_writes + 1; end
       repeat (4) @(posedge clk); t_err <= 3'd0; t_done <= 1;
     end
   end
@@ -145,7 +146,7 @@ module tb_fav;
     end
     if (hr_de && cap) $fwrite(f, "%c%c%c", hr_rgb[23:16], hr_rgb[15:8], hr_rgb[7:0]);
   end
-  integer errors = 0;
+  integer errors = 0; integer fav_writes = 0; reg [31:0] fav_head = 0;
   // check that every visible cover's cache slot holds exactly that game's art from the pack
   task check_cache;
     integer k2, j, g, sl, bad; reg [31:0] blob0;
@@ -178,7 +179,7 @@ module tb_fav;
     wait (dut.state == 23 && dut.level == 8); frames(3);
     show("boot");        want(dut.fav_mode && dut.idx == 0 && dut.rlo == 0 && dut.rcount == 4);
     tap(3); tap(3); tap(3);
-    show("tile");        want(dut.vtile && dut.idx == 3 && dut.cg[1] == dut.count + 3 && dut.pmode == 7 && dut.cl[1]);
+    show("tile");        want(dut.vtile && dut.idx == 3 && dut.cg[1] == dut.count + 4 && dut.pmode == 7 && dut.cl[1]);
     tap(3);
     show("wrap");        want(dut.idx == 0 && !dut.vtile);
     tap(2);
@@ -187,12 +188,50 @@ module tb_fav;
     show("A: all");      want(!dut.fav_mode && dut.idx == 3 && dut.rlo == 3 && dut.rcount == 8 && dut.lbl_sec == 28);
     tap(2);
     show("all left");    want(dut.idx == 10);
-    tap(1);
-    show("down jump");   want(dut.idx >= 3);
-    tap(14);
+    tap(9);
+    show("R jump");      want(dut.idx >= 3);
+    tap(14);                                             // the ring from All: the empty slot first
+    show("select slot"); want(dut.cart_view && dut.cart_none && dut.idx == dut.count + 3);
+    tap(14); wait (!dut.vt_busy); frames(4);
     show("select fav");  want(dut.fav_mode && dut.idx == 0);
     tap(14);
     show("select all");  want(!dut.fav_mode && dut.idx >= 3);
+    // ---- live favorites (the pack carries positions: CRT1 flag 8)
+    $display("live %0d lfav_n %0d (want 3) fl_valid %0d lookup src %0d idx %0d", dut.live, dut.lfav_n, dut.fl_valid, dut.g_cur_src, dut.idx);
+    want(dut.g_cur_src == dut.idx);                      // the selection lookup keeps up (it starved in the flow on hardware)
+    want(dut.live && dut.lfav_n == 3 && dut.fl_valid);
+    tap(14); tap(14); wait (!dut.vt_busy); frames(4);    // the slot, then Favorites
+    show("select fav2"); want(dut.fav_mode && dut.idx == 0 && dut.rcount == 4);
+    tap(3);
+    show("fav 1");       $display("  cur_fav %0d cur_fp %0d cur_ap %0d lookup src %0d", dut.cur_fav, dut.cur_fp, dut.cur_ap, dut.g_cur_src);
+    want(dut.g_cur_src == dut.idx && dut.g_cur == dut.fl_ram.m[dut.idx]);
+    want(dut.idx == 1 && dut.cur_fav && dut.cur_fp == 1);
+    fav_writes = 0;
+    tap(6); tap(3);                                      // X, then Right: the favorite option (Start over is skipped)
+    show("options");     want(dut.gm_on && dut.gm_sel == 2);
+    tap(4);                                              // A: unfavorite; the cover lifts out, the list closes
+    wait (!dut.lt && !dut.anim); frames(6);
+    show("unstarred");   want(!dut.gm_on && dut.fav_mode && dut.lfav_n == 2 && dut.rcount == 3 && dut.idx == 1 && dut.fv_n == 1 && !dut.fv_st[0]);
+    $display("favorites.cfg writes %0d head %h (want 46415632 = FAV2)", fav_writes, fav_head); want(fav_writes == 1 && fav_head == 32'h46415632);
+    $display("list: pos0 %0d pos1 %0d (want 0 then 2: favorite 1 dropped)", dut.fl_ram.m[0], dut.fl_ram.m[1]); want(dut.fl_ram.m[0] == 0 && dut.fl_ram.m[1] == 2);
+    tap(14);                                             // All games: star a game that is not a favorite
+    show("select all2"); want(!dut.fav_mode);
+    tap(3); tap(3);
+    show("all +2");      want(!dut.cur_fav);
+    tap(6); tap(3); tap(4);                              // X, Right, A: add to favorites
+    wait (dut.fl_valid); frames(4);
+    show("starred");     $display("  gm_on %0d lfav_n %0d cur_fav %0d fv_n %0d", dut.gm_on, dut.lfav_n, dut.cur_fav, dut.fv_n);
+    want(dut.gm_on && dut.lfav_n == 3 && dut.cur_fav && dut.fv_n == 2);
+    tap(5);                                              // B closes the options
+    tap(14);                                             // the ring: All -> the empty slot
+    show("select slot"); want(dut.cart_view && dut.cart_none);
+    tap(14);                                             // -> Favorites: the new one is last, before the All games cover
+    wait (!dut.vt_busy); frames(4);
+    show("select fav3"); want(dut.fav_mode && dut.rcount == 4);
+    $display("list: pos2 %0d (want the starred game's A to Z position %0d)", dut.fl_ram.m[2], dut.fv_ap[1]); want(dut.fl_ram.m[2] == dut.fv_ap[1]);
+    tap(3);                                              // from the kept place (1) to the new favorite at 2
+    show("fav pos 2");   $display("  c_valid %0d cj %0d cph %0d cgame0 %0d g_cur %0d src %0d fl_valid %0d rcount %0d", dut.c_valid, dut.cj, dut.cph, dut.cgame[0], dut.g_cur, dut.g_cur_src, dut.fl_valid, dut.rcount);
+    want(dut.idx == 2 && dut.cg[1] == dut.fv_ap[1] && dut.cur_fav);
     $display("RESULT %s (%0d errors)", errs == 0 ? "PASS" : "FAIL", errs);
     $finish;
   end

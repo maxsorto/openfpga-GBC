@@ -183,6 +183,8 @@ export interface SyncPlan {
     playedCount: number;
     /** Entries in the browsable menu; the rest are carts seen on the Pocket. */
     listCount: number;
+    /** v7: ROM paths longer than the entry's 71 byte path field. They still play. */
+    cutPaths: string[];
     titles: string[];
     crcs: string[];
     skipped: string[];

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { COVERS_REL } from './config.js';
 import { buildLibrary, cardRomDir, listCardRoms, playHistory, type Game, type Library } from './library.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
-import { menuList, packWriter, type MenuItem } from './pack.js';
+import { ROM_PATH_MAX_V7, gamePaths, menuList, packWriter, type MenuItem } from './pack.js';
 import { fileCrc } from './roms.js';
 import { readPocketFavorites, type PocketFavorites } from './pocketfav.js';
 import { loadChoices, pendingMove } from './choices.js';
@@ -140,6 +140,11 @@ export interface SyncPlan {
     listCount: number;
     /** Left out of the pack because their path is too long for the core. */
     skipped: string[];
+    /**
+     * v7: ROM paths longer than the entry's 71 byte path field, cut there. The core opens
+     * ROMs through the full path structs, so they still play; this is only a note.
+     */
+    cutPaths: string[];
   };
   /**
    * Carts seen on the Pocket that it did not recognize (carts.cfg, and the ones saved
@@ -484,6 +489,10 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       favCount: packItems.filter((it) => it.section === 'favorite').length,
       playedCount: packItems.filter((it) => it.section === 'played').length,
       skipped: menu.filter((g) => g.problems.length).map((g) => g.file),
+      cutPaths:
+        writer.version >= 7
+          ? [...new Set(packGames.map((g) => gamePaths(g.platform, g.file).rom).filter((p) => Buffer.byteLength(p, 'utf8') > ROM_PATH_MAX_V7))]
+          : [],
     },
     space: { freeBytes, neededBytes, enough: enoughAsIs || removeFirst, removeFirst },
     carts: {

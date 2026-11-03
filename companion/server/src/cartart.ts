@@ -135,6 +135,19 @@ export function defaultCartBlobs(): Buffer[] {
   return memo;
 }
 
+/**
+ * The empty slot: what the core's "No cartridge" view shows. Keyed like the carts
+ * (0x0000 is transparent). It goes in the pack only when its PNGs are there; there is
+ * no drawn placeholder for it.
+ */
+export function emptySlotBlob(): Buffer | null {
+  const parts = [CEN, TH].map((S) => loadPng('empty' as CartKind, S));
+  if (parts.some((p) => !p)) return null;
+  const blob = Buffer.concat(parts.map((p) => encodeKeyed(p!)));
+  if (blob.length !== BLOB_BYTES) throw new Error('The empty slot art has the wrong size');
+  return blob;
+}
+
 /** True when real art files are there (the placeholder is used otherwise). */
 export function hasCartArtFiles(): boolean {
   return CART_KINDS.every((k) => [CEN, TH].every((S) => fs.existsSync(path.join(ASSETS_DIR, `${k}-${S}.png`))));

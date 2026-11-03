@@ -30,7 +30,7 @@ def png565(path):
     w = np.where(w == 0, 1, w); w = np.where(im[..., 3] == 0, 0, w)
     return w.astype('<u2').tobytes()
 carts = '../../openfpga-GBC/companion/server/assets/carts/'
-defaults = [png565(carts + f'{k}-128.png') + png565(carts + f'{k}-80.png') for k in ('dmg', 'dual', 'cgb')]
+defaults = [png565(carts + f'{k}-128.png') + png565(carts + f'{k}-80.png') for k in ('dmg', 'dual', 'cgb', 'empty')]   # the empty slot is image 3 (flag 4)
 if FAV:                                       # the All games cover: a 3x3 mosaic, opaque
     from PIL import Image as I
     def art_img(g, size):
@@ -60,11 +60,15 @@ for i, n in enumerate(names):
 out[16:24] = b'IDX1' + struct.pack('<HH', len(favs), 0)
 for i, s_ in enumerate(starts): out[24 + i * 2:26 + i * 2] = struct.pack('<H', s_)
 out[80:92] = b'FPR2' + struct.pack('<IHH', fpr, N, 0)
-out[96:116] = b'CRT1' + struct.pack('<IHHHHHH', art_off, N, 3 if FAV else 1, *acc, 0)
+out[96:116] = b'CRT1' + struct.pack('<IHHHHHH', art_off, N, (3 if FAV else 1) | 4 | 8, *acc, 0)   # carts.cfg path, tile, empty slot, positions
+favpos = {games[k]: j for j, k in enumerate(favs)}   # game -> favorites block position
 for i, (g, fv) in enumerate(order):
     e = bytearray(src_entry(g))
     e[40] = (e[40] & 1) | (2 if fv else 0)
     e[42:44] = struct.pack('<H', 0x7D3F if g == games[5] else 0xFD20)
+    e[123] = 0                                       # the path is cut to 71 characters; positions follow (pack v7 + CRT1 flag 8)
+    e[124:126] = struct.pack('<H', favpos.get(g, 0xFFFF))
+    e[126:128] = struct.pack('<H', len(favs) + games.index(g))
     out[528 + i * 128: 528 + (i + 1) * 128] = e
     b = src_blob(g); out[blob0 + i * 65536: blob0 + i * 65536 + len(b)] = b
     for k in range(3):

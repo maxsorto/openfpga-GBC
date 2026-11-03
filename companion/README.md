@@ -125,7 +125,9 @@ a 4096 byte file:
 | 6 | u16 | n, records used |
 | 8 | n x 8 B | u32 CRC32 of the ROM, u8 state (1 favorite, 0 not), 3 pad |
 
-The rest is zero, and a later record wins for the same CRC. Every plan reads it and shows
+The rest is zero, and a later record wins for the same CRC. The newer core writes `FAV2`
+instead, with 16 byte records (u32 CRC32, u32 state, u16 fav_pos, u16 az_pos, 4 zero
+bytes); the app reads both and uses the CRC and state. Every plan reads it and shows
 "N favorite changes from the Pocket". They count for the pack the sync writes, and sync
 saves them in the app by CRC (a ROM only on the card, or a card copy, keeps its own
 star). After the pack is written, sync writes the file back empty (`FAV1`, version 1,
@@ -301,7 +303,7 @@ Both formats are defined by `tools/make_cover_pack.py` (v6 by default, v7 with `
 | | v6 | v7 |
 | --- | --- | --- |
 | Games | up to 31 | up to 2047 |
-| Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad u8, accent u16, size u32, CRC32 u32, path[76] |
+| Entry (128 B) | title[40], flags u8, pad[3], size u32, path[80] | title[40], flags u8, pad u8, accent u16, size u32, CRC32 u32, path[72] (71 bytes and a NUL), fav_pos u16, az_pos u16 |
 | Flags | bit 0 original Game Boy | bit 0 original Game Boy, bit 1 favorite, bit 2 cartridge only |
 | Art per game | 45568 B, packed back to back | the same 45568 B, padded with zeros to 65536 B |
 | After the log path | nothing | two more path structs, `/Saves/<platform>/common/favorites.cfg` and `carts.cfg`; then the cartridge fingerprint table; then the default cartridge art |
@@ -323,6 +325,14 @@ pixels darker than v = 0.15 are skipped, the rest are weighted by s x s x v, and
 weighted mean color is made a little more saturated (s x 1.3) at full brightness. A
 cover with almost no color (total weight under 2% of the pixels) gets a cool white,
 `#C8D4FF`, treated the same way. Every entry has one.
+
+The last 4 bytes of a v7 entry say where its game sits, the same on every entry of that
+game, so the core can keep Favorites mode in step between syncs: `fav_pos` (bytes 124
+and 125) is the game's place in the favorites section, 0 based, or `0xFFFF` if it is not
+a favorite; `az_pos` (bytes 126 and 127) is the pack index of the game's entry in the A
+to Z list (its own index there, its twin's on the favorites copy), or `0xFFFF` for a
+cartridge-only entry. The entry's path is informational (the core opens ROMs through the
+path structs), so it is cut to 71 bytes to make room; the plan notes any path that long.
 
 A cartridge-only entry (flags bit 2) is a cart the Pocket noted that has no ROM on the
 card. Its path structs are all zero, its CRC32 is the cart's id (the CRC32 of its 28
@@ -356,7 +366,7 @@ At file offset 96, v7 has the cartridge block:
 | 96 | 4 | `CRT1` |
 | 100 | u32 | File offset of the default cartridge art (0 if none) |
 | 104 | u16 | list_count: entries 0 to list_count - 1 are the browsable menu; the rest are cartridge-only |
-| 106 | u16 | Flags. Bit 0: the `carts.cfg` path struct follows the `favorites.cfg` one. Bit 1: the default art has a fourth image, the All games tile |
+| 106 | u16 | Flags. Bit 0: the `carts.cfg` path struct follows the `favorites.cfg` one. Bit 1: the default art includes the All games tile. Bit 2: the default art includes the empty slot. Bit 3: entries carry fav_pos and az_pos (always set; older v7 packs have zeros there) |
 | 108, 110, 112 | 3 x u16 | RGB565 accent of each default image |
 | 114 | u16 | 0 |
 
@@ -388,7 +398,12 @@ transparent; an opaque pixel that would be `0x0000` is written as `0x0001`. The 
 come from `server/assets/carts/{dmg,dual,cgb}-128.png` and `-80.png` (RGBA, alpha 0 or
 255), made by `tools/make_cart_art.py`.
 
-When the pack has favorites, a fourth image follows at the same stride (and CRT1 flags
+After the three carts comes image 3, the empty slot the core shows in its "No cartridge"
+view (`empty-128.png` and `-80.png`, keyed like the carts, CRT1 flags bit 2), whenever
+those files are there. So the order is: 0 gray cart, 1 black cart, 2 clear cart, 3 empty
+slot, 4 All games tile.
+
+When the pack has favorites, one more image follows at the same stride (and CRT1 flags
 bit 1 is set): the All games tile, the closing cover of Favorites mode. It is opaque, so
 `0x0000` is written as `0x0001` in it. It is a 3 by 3 mosaic of covers from the A to Z
 list, not favorites, picked evenly across it (the middle of each ninth; covers with real

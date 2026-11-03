@@ -7,7 +7,7 @@ distance fields, so edges, bevels and the label recess shade smoothly, then redu
 Alpha is binary: the core draws RGB565 0x0000 in these images as transparent, so the glow behind shows through.
 
 Usage: make_cart_art.py OUT_DIR [--preview preview.png]
-Writes dmg-128.png, dmg-80.png, dual-128.png, dual-80.png, cgb-128.png, cgb-80.png (RGBA).
+Writes dmg-128.png, dmg-80.png, dual-128.png, dual-80.png, cgb-128.png, cgb-80.png and empty-128.png, empty-80.png (the\nempty slot: a dotted outline, for the No cartridge view) (RGBA).
 """
 import argparse, os
 import numpy as np
@@ -148,6 +148,25 @@ def draw(kind):
     col = mix(col, col * 0.45, rim * 0.8)
     return col, alpha
 
+def draw_empty():
+    """The empty slot: the gray cart's outline as a dotted line, and its label as a thin frame. No fill."""
+    H = 944; W = H * 57 / 65
+    cx, cy = S / 2, S / 2
+    x0, x1, y0, y1 = cx - W / 2, cx + W / 2, cy - H / 2, cy + H / 2
+    body = sd_round_rect(cx, cy, W / 2, H / 2, 30)
+    body = np.maximum(body, sd_plane(x1 - 84, y0, 1, -1))
+    ring = np.abs(body) - 7                     # a 14 px wide outline (1.75 px at 128)
+    # dots: the outline is broken by its angle around the centre, 36 dashes
+    ang = np.arctan2(yy - cy, xx - cx)
+    dash = ((ang / (2 * np.pi) * 36) % 1.0) < 0.58
+    col = np.zeros((S, S, 3)) + hexc('#8e96ac')
+    alpha = cover(ring) * dash
+    lw, lh = W / 2 - 64, 300
+    lcy = cy + 140
+    label = np.abs(sd_round_rect(cx, lcy, lw, lh, 16)) - 5
+    alpha = np.maximum(alpha, cover(label) * 0.5)
+    return col, alpha
+
 def reduce(col, alpha, size):
     pre = np.dstack([col * alpha[..., None], alpha])
     img = Image.fromarray((pre * 255 + 0.5).astype(np.uint8))
@@ -156,7 +175,7 @@ def reduce(col, alpha, size):
     al = a[..., 3]
     rgb = a[..., :3] + BG * (1 - al[..., None])         # premultiplied over the dark background
     out = np.zeros((size, size, 4), np.uint8)
-    keep = al >= 0.5
+    keep = al >= 0.35
     out[..., :3] = np.clip(rgb * 255 + 0.5, 0, 255).astype(np.uint8)
     out[..., 3] = np.where(keep, 255, 0)
     out[~keep, :3] = 0
@@ -169,8 +188,8 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     tiles = []
-    for kind in ('dmg', 'dual', 'cgb'):
-        col, alpha = draw(kind)
+    for kind in ('dmg', 'dual', 'cgb', 'empty'):
+        col, alpha = draw_empty() if kind == 'empty' else draw(kind)
         for size in (128, 80):
             im = reduce(col, alpha, size)
             im.save(os.path.join(a.out, f'{kind}-{size}.png'))

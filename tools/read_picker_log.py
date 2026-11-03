@@ -45,17 +45,17 @@ def main():
     else: sys.exit(f"not a picker log (starts with {raw[:4]!r})")
     words = struct.unpack(f"{end}{len(raw) // 4}I", raw[:len(raw) // 4 * 4])
     recs = [(words[2 * i], words[2 * i + 1]) for i in range(len(words) // 2)]
-    wp, total = recs[0][1] >> 16 & 0x1FF, recs[0][1] & 0xFFFF
+    wp, total = recs[0][1] >> 16 & 0xFF, recs[0][1] & 0xFFFF
     # records 1..64 are the first 64 written (the boot) and are never overwritten; 65..511 are a ring
-    order = list(range(1, 65)) + list(range(wp, 512)) + list(range(65, wp)) if total > 511 else list(range(1, wp))
+    order = list(range(1, 65)) + list(range(wp, 256)) + list(range(65, wp)) if total > 255 else list(range(1, wp))
     print(f"{total} records written, showing {len(order)}")
     st = lambda v: names.get(v, str(v))
     for i in order:
         hi, lo = recs[i]
         tag, t = chr(hi >> 24), (hi & 0xFFFFFF) * TICK_MS
         if tag == "S":
-            new, old = lo >> 25 & 0x7F, lo >> 18 & 0x7F
-            terr, oerr, idx = lo >> 15 & 7, lo >> 12 & 7, lo & 0x7FF
+            new, old = lo >> 24 & 0xFF, lo >> 16 & 0xFF
+            terr, oerr, idx = lo >> 14 & 3, lo >> 11 & 7, lo & 0x7FF
             print(f"{t:10.2f} ms  S  {st(old)} -> {st(new)}  game {idx}  slot_err {terr} open_err {oerr}")
         elif tag == "D":
             print(f"{t:10.2f} ms  D  {lo & 0xFFFFFF:06x}  [{bits(lo)}]")

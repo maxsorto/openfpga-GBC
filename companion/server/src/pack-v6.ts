@@ -27,7 +27,7 @@ export const formatV6: PackFormat = {
   version: PACK_VERSION,
   maxGames: MAX_GAMES,
   stride: BLOB_BYTES,
-  entry(g) {
+  entry(g, _place) {
     const p = gamePaths(g.platform, g.romFile);
     const e = Buffer.alloc(ENTRY_BYTES);
     fixed(asciiTitle(g.title), 40).copy(e, 0);

@@ -23,7 +23,7 @@ p = HexPack(pack)
 gr = g.Grid(p, idx); gr.top = top
 t, pl = gr.title(idx)
 x, y = gr.cell_xy(idx, top)
-want = g.compose(gr.lattice(top, skip=idx) + [gr.pop(idx, x - 4, y - 4)], t, pl, p.count, idx).astype(int)
+want = g.compose(gr.lattice(top, skip=idx) + [gr.pop(idx, x - 4, y - 4)], t, pl, p.count, idx, leg=(3, 3, True)).astype(int)
 got = np.asarray(Image.open(ppm).convert('RGB')).astype(int)
 d = np.abs(want - got).max(-1)
 print(f'pixels differing: {(d > 0).sum()} of {d.size}; > 2 levels: {(d > 2).sum()}; max {d.max()}')

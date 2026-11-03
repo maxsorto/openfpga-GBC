@@ -139,7 +139,7 @@ module tb_b19;
     if (dut.gm_sel != 2) errs = errs + 1;
     press(4); $display("A fv_n %0d crc %h st %0d cur_fav %0d writes %0d", dut.fv_n, dut.fv_crc[0], dut.fv_st[0], dut.cur_fav, nwrites);
     if (dut.fv_n != 1 || dut.fv_st[0] != 0 || dut.fv_crc[0] != dut.cur_crc || dut.cur_fav != 0 || nwrites < 1) errs = errs + 1;
-    if (wcap[0] !== "FAV1" || wcap[1] !== 32'h01000100 || wcap[2] !== {dut.cur_crc[7:0], dut.cur_crc[15:8], dut.cur_crc[23:16], dut.cur_crc[31:24]} || wcap[3] !== 32'h0) begin
+    if (wcap[0] !== "FAV2" || wcap[1] !== 32'h02000100 || wcap[2] !== {dut.cur_crc[7:0], dut.cur_crc[15:8], dut.cur_crc[23:16], dut.cur_crc[31:24]} || wcap[3] !== 32'h0) begin
       errs = errs + 1; $display("  FAIL favorites.cfg contents"); end
     press(5); $display("B gm_on %0d state %0d", dut.gm_on, dut.state);
     if (dut.gm_on) errs = errs + 1;

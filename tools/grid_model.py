@@ -49,10 +49,10 @@ def lerp(a, b, k):             # k is 0..256
     return a + (((b - a) * k) >> 8)
 
 # ------------------------------------------------------------------ scenes
-def compose(covers, title, plat, cnt, idx, tl=8):
+def compose(covers, title, plat, cnt, idx, tl=8, leg=None):
     """Lattice frame: covers clipped above CLIP_Y, the text block from a text-only render below it."""
     top = render(dict(covers=covers, cnt=1))
-    txt = render(dict(covers=[], title=title, plat=plat, cnt=cnt, idx=idx, tl=tl))
+    txt = render(dict(covers=[], title=title, plat=plat, cnt=cnt, idx=idx, tl=tl, leg=leg))
     top[CLIP_Y:] = txt[CLIP_Y:]
     return top
 

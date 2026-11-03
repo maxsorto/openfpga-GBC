@@ -281,6 +281,12 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
               ) : (
                 <div className="notice muted">{plan.pack.reason}</div>
               )}
+              {plan.pack.cutPaths.length > 0 && (
+                <div className="notice muted" title={plan.pack.cutPaths.join('\n')}>
+                  {plan.pack.cutPaths.length === 1 ? '1 ROM path is' : `${plan.pack.cutPaths.length} ROM paths are`} longer than 71 characters, so
+                  covers.bin keeps a shortened copy in the game's entry. The games still play: the core opens them by their full path.
+                </div>
+              )}
               {plan.carts.cfg && plan.carts.cfg.records === 0 && plan.carts.cfg.misreads > 0 && (
                 <div className="notice muted">
                   carts.cfg has {plan.carts.cfg.misreads === 1 ? 'a cart' : `${plan.carts.cfg.misreads} carts`} read through bad contacts, not real carts. Sync

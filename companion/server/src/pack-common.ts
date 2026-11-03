@@ -50,6 +50,28 @@ export interface PackEntry {
   hasArt?: boolean;
 }
 
+/**
+ * Where an entry's game sits in the list, the same on every entry of that game:
+ *   favPos: its place in the favorites section, 0 based, or -1 if it is not a favorite
+ *   azPos:  the pack index of its entry in the A to Z list (for that entry, its own index;
+ *           for its copy in the favorites or played section, its twin's), or -1 if none
+ */
+export interface EntryPlace {
+  favPos: number;
+  azPos: number;
+}
+
+export function entryPlaces(games: PackEntry[]): EntryPlace[] {
+  const fav = new Map<string, number>();
+  const az = new Map<string, number>();
+  games.forEach((g, i) => {
+    if (!g.crc) return;
+    if (g.section === 'favorite' && !fav.has(g.crc)) fav.set(g.crc, fav.size);
+    if ((g.section ?? 'az') === 'az' && !az.has(g.crc)) az.set(g.crc, i);
+  });
+  return games.map((g) => (g.cartOnly || !g.crc ? { favPos: -1, azPos: -1 } : { favPos: fav.get(g.crc) ?? -1, azPos: az.get(g.crc) ?? -1 }));
+}
+
 /** The pack has a favorites section, so Favorites mode is there and needs its All games tile. */
 export function hasFavorites(games: PackEntry[]): boolean {
   return games.some((g) => g.section === 'favorite');
@@ -160,7 +182,8 @@ export interface PackFormat {
   maxGames: number;
   /** Bytes per art blob in the file. */
   stride: number;
-  entry(g: PackEntry): Buffer;
+  /** One entry, with where its game sits in the list (see EntryPlace). */
+  entry(g: PackEntry, place: EntryPlace): Buffer;
   /** The 512 reserved bytes after the header. Zeros when not given. */
   reserved?(games: PackEntry[]): Buffer;
   /** Path structs after the picker.log one, for files the core opens by name. */
@@ -254,7 +277,8 @@ export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBu
   const arranged = fmt.arrange ? fmt.arrange(gamesIn) : gamesIn;
   const arts = arranged.map((g) => artBlobAndAccent(g.art));
   const games = arranged.map((g, i) => ({ ...g, accent: g.accent ?? arts[i].accent }));
-  const parts: Buffer[] = [header(fmt, games), ...games.map((g) => fmt.entry(g))];
+  const places = entryPlaces(games);
+  const parts: Buffer[] = [header(fmt, games), ...games.map((g, i) => fmt.entry(g, places[i]))];
   games.forEach((_, i) => {
     parts.push(padBlob(fmt, arts[i].blob));
     opts.onProgress?.(i + 1);
@@ -286,7 +310,8 @@ export async function writePackWith(
     written += b.length;
   };
   await put(header(fmt, games));
-  await put(Buffer.concat(games.map((g) => fmt.entry(g))));
+  const places = entryPlaces(games);
+  await put(Buffer.concat(games.map((g, i) => fmt.entry(g, places[i]))));
   for (let i = 0; i < games.length; i++) {
     await put(padBlob(fmt, await games[i].blob()));
     opts.onProgress?.(i + 1);
@@ -338,6 +363,9 @@ export interface PackSummary {
   flags: number[];
   /** v7: RGB565 accent per entry (bytes 42 and 43). */
   accents: number[];
+  /** v7: fav_pos and az_pos per entry (bytes 124..125 and 126..127), 0xFFFF for none. */
+  favPos: number[];
+  azPos: number[];
   /** v7: the "CRT1" block at file offset 96. */
   carts: { artOffset: number; listCount: number; flags: number; accents: number[] } | null;
   /** v7 only, when the reserved area starts with "IDX1". */
@@ -356,14 +384,20 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   const crcs: string[] = [];
   const flags: number[] = [];
   const accents: number[] = [];
+  const favPos: number[] = [];
+  const azPos: number[] = [];
   const pathAt = version >= 7 ? 52 : 48;
   for (let i = 0; i < count; i++) {
     const o = HEADER_BYTES + RESERVED_BYTES + i * ENTRY_BYTES;
     if (o + ENTRY_BYTES > buf.length) break;
     titles.push(buf.toString('latin1', o, o + 40).replace(/\0.*$/s, ''));
     flags.push(buf.readUInt8(o + 40));
-    if (version >= 7) accents.push(buf.readUInt16LE(o + 42));
-    roms.push(buf.toString('utf8', o + pathAt, o + ENTRY_BYTES).replace(/\0.*$/s, ''));
+    if (version >= 7) {
+      accents.push(buf.readUInt16LE(o + 42));
+      favPos.push(buf.readUInt16LE(o + 124));
+      azPos.push(buf.readUInt16LE(o + 126));
+    }
+    roms.push(buf.toString('utf8', o + pathAt, o + (version >= 7 ? 124 : ENTRY_BYTES)).replace(/\0.*$/s, ''));
     if (version >= 7) crcs.push(buf.readUInt32LE(o + 48).toString(16).toUpperCase().padStart(8, '0'));
   }
   let index: PackIndex | null = null;
@@ -378,7 +412,7 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   if (version >= 7 && buf.length >= 116 && buf.toString('ascii', 96, 100) === 'CRT1') {
     carts = { artOffset: buf.readUInt32LE(100), listCount: buf.readUInt16LE(104), flags: buf.readUInt16LE(106), accents: [108, 110, 112].map((o) => buf.readUInt16LE(o)) };
   }
-  return { version, count, titles, roms, crcs, flags, accents, carts, index, fingerprints };
+  return { version, count, titles, roms, crcs, flags, accents, favPos, azPos, carts, index, fingerprints };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */
