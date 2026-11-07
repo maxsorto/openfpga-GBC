@@ -483,6 +483,7 @@ always_comb begin
     32'hF4xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker debug log
     32'hF5xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker favorites.cfg
     32'hF6xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker carts.cfg
+    32'hF7xxxxxx: begin bridge_rd_data = picker_param_rd;             end   // cover picker recent.cfg, settings.cfg
     default:      begin bridge_rd_data = 0;                           end
   endcase
 end

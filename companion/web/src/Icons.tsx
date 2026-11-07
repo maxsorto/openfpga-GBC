@@ -105,3 +105,20 @@ export const IconGrid = (p: P) => (
     <rect x="9" y="9" width="5" height="5" rx="1" />
   </svg>
 );
+
+/** A clock: recently played. */
+export const IconClock = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="8" cy="8" r="6.25" />
+    <path d="M8 4.5V8l2.25 1.5" />
+  </svg>
+);
+
+/** A gear: the Pocket's settings. */
+export const IconGear = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="8" cy="8" r="2" />
+    <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.6 3.6l1.05 1.05M11.35 11.35l1.05 1.05M3.6 12.4l1.05-1.05M11.35 4.65l1.05-1.05" />
+    <circle cx="8" cy="8" r="4.25" />
+  </svg>
+);

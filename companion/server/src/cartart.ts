@@ -135,12 +135,20 @@ export function defaultCartBlobs(): Buffer[] {
   return memo;
 }
 
+let emptySlotOverride: Buffer | null | undefined;
+
+/** Tests: pretend the empty slot art is missing (null), or read the files again (undefined). */
+export function overrideEmptySlotForTests(blob: Buffer | null | undefined): void {
+  emptySlotOverride = blob;
+}
+
 /**
  * The empty slot: what the core's "No cartridge" view shows. Keyed like the carts
  * (0x0000 is transparent). It goes in the pack only when its PNGs are there; there is
  * no drawn placeholder for it.
  */
 export function emptySlotBlob(): Buffer | null {
+  if (emptySlotOverride !== undefined) return emptySlotOverride;
   const parts = [CEN, TH].map((S) => loadPng('empty' as CartKind, S));
   if (parts.some((p) => !p)) return null;
   const blob = Buffer.concat(parts.map((p) => encodeKeyed(p!)));

@@ -16,7 +16,8 @@ def find(name):
     raise KeyError(name)
 names = ["Kirby's Dream Land", "Kirby's Dream Land 2", "Kirby's Pinball Land", "Dr. Mario", "Donkey Kong Land",
          "Pokemon - Crystal Version", "Pokemon - Gold Version", "Pokemon - Silver Version"]
-FAV = '--fav' in sys.argv
+B26 = '--b26' in sys.argv                     # b26.hex: --fav plus build 26 (CRT1 flag 16: the gear image, REC1, recent.cfg and settings.cfg paths)
+FAV = '--fav' in sys.argv or B26
 GRID = '--grid' in sys.argv                   # grid.hex: 14 games (three full rows and a half), no favorites
 if GRID:
     names = names + ["Donkey Kong Land 2", "Donkey Kong Land III", "Kirby's Star Stacker", "Kirby's Block Ball", "Mario's Picross", "Klax"]
@@ -45,10 +46,20 @@ if FAV:                                       # the All games cover: a 3x3 mosai
         w = ((a[..., 0] >> 3) << 11) | ((a[..., 1] >> 2) << 5) | (a[..., 2] >> 3); w = np.where(w == 0, 1, w)
         return w.astype('<u2').tobytes()
     defaults.append(mosaic(128) + mosaic(80))
+if B26:                                       # the gear: a light ring with eight teeth on a dark tile, opaque
+    def gear(S):
+        yy, xx = np.mgrid[0:S, 0:S].astype(np.float64); c = (S - 1) / 2; r = np.hypot(xx - c, yy - c) / (S / 2)
+        a = np.arctan2(yy - c, xx - c); tooth = (np.cos(a * 8) > 0.3)
+        body = ((r < 0.62) | ((r < 0.78) & tooth)) & (r > 0.26)
+        img = np.where(body[..., None], [200, 204, 214], [22, 24, 30]).astype(np.int32)
+        w = ((img[..., 0] >> 3) << 11) | ((img[..., 1] >> 2) << 5) | (img[..., 2] >> 3); w = np.where(w == 0, 1, w)
+        return w.astype('<u2').tobytes()
+    defaults.append(gear(128) + gear(80))
 acc = [0xA59F, 0x8A7F, 0x4E9A]
 blob0 = 528 + N * 128
 paths0 = blob0 + N * 65536
-fpr = (paths0 + (N * 3 + 3) * 256 + 3) & ~3
+NEXTRA = 5 if B26 else 3                      # path structs after the games: log, favorites, carts (recent, settings)
+fpr = (paths0 + (N * 3 + NEXTRA) * 256 + 3) & ~3
 art_off = (fpr + N * 8 + 4095) & ~4095
 out = bytearray(art_off + len(defaults) * 65536)
 out[0:16] = b'GBCV' + struct.pack('<HHHH', 7, N, 128, 80) + bytes(4)
@@ -60,7 +71,10 @@ for i, n in enumerate(names):
 out[16:24] = b'IDX1' + struct.pack('<HH', len(favs), 0)
 for i, s_ in enumerate(starts): out[24 + i * 2:26 + i * 2] = struct.pack('<H', s_)
 out[80:92] = b'FPR2' + struct.pack('<IHH', fpr, N, 0)
-out[96:116] = b'CRT1' + struct.pack('<IHHHHHH', art_off, N, (3 if FAV else 1) | 4 | 8, *acc, 0)   # carts.cfg path, tile, empty slot, positions
+out[96:116] = b'CRT1' + struct.pack('<IHHHHHH', art_off, N, (3 if FAV else 1) | 4 | 8 | (16 if B26 else 0), *acc, 0)   # carts.cfg path, tile, empty slot, positions, build 26
+if B26:                                       # REC1: Dr. Mario then Kirby's Dream Land 2 played last (A to Z positions)
+    rec = [len(favs) + 3, len(favs) + 1]
+    out[128:136 + 2 * len(rec)] = b'REC1' + struct.pack('<HH', len(rec), 0) + b''.join(struct.pack('<H', r) for r in rec)
 favpos = {games[k]: j for j, k in enumerate(favs)}   # game -> favorites block position
 for i, (g, fv) in enumerate(order):
     e = bytearray(src_entry(g))
@@ -74,12 +88,14 @@ for i, (g, fv) in enumerate(order):
     for k in range(3):
         p = f'/Assets/gbc/common/game{i}.{["gbc", "sav", "sus"][k]}'.encode()
         o = paths0 + (i * 3 + k) * 256; out[o:o + len(p)] = p
-for k, p in enumerate((b'/Saves/gbc/common/picker.log', b'/Saves/gbc/common/favorites.cfg', b'/Saves/gbc/common/carts.cfg')):
+for k, p in enumerate((b'/Saves/gbc/common/picker.log', b'/Saves/gbc/common/favorites.cfg', b'/Saves/gbc/common/carts.cfg',
+                       b'/Saves/gbc/common/recent.cfg', b'/Saves/gbc/common/settings.cfg')[:NEXTRA]):
     o = paths0 + (N * 3 + k) * 256; out[o:o + len(p)] = p
 # FPR2: game 5 matches the test cart by title CRC (its header checksums differ: a different revision)
 for i, (g, fv) in enumerate(order):
     rec = bytes([0x11, 0x22, 0x33, 0x80]) + struct.pack('<I', zlib.crc32(b'PM_CRYSTAL\0') if (g == games[5] and not FAV) else 0x01020304 + i)
     out[fpr + i * 8: fpr + i * 8 + 8] = rec
 for k, d in enumerate(defaults): out[art_off + k * 65536: art_off + k * 65536 + len(d)] = d
-open('fav.hex' if FAV else 'grid.hex' if GRID else 'vt.hex', 'w').write('\n'.join(f'{b:02x}' for b in out) + '\n')
-print('fav.hex' if FAV else 'grid.hex' if GRID else 'vt.hex', len(out), 'bytes; default art at', art_off, 'FPR2 at', fpr)
+name = 'b26.hex' if B26 else 'fav.hex' if FAV else 'grid.hex' if GRID else 'vt.hex'
+open(name, 'w').write('\n'.join(f'{b:02x}' for b in out) + '\n')
+print(name, len(out), 'bytes; default art at', art_off, 'FPR2 at', fpr)

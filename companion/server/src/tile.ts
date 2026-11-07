@@ -100,3 +100,43 @@ export function allGamesTileBlob(covers: RGBImage[]): Buffer {
   const mosaic = composeTile(covers);
   return Buffer.concat([opaque565(fit(mosaic, CEN)), opaque565(fit(mosaic, TH))]);
 }
+
+/**
+ * The Settings tile: the cover of the Settings stop in the Pocket's menu ring (build 26).
+ * It sits beside the All games tile and looks like it: the tile's dark gutter color, a
+ * gear where the mosaic would be, the same dark band with "Settings" in white. The whole
+ * 384 x 384 picture is drawn once into assets/tiles/settings-384.png (RGB) by
+ * scripts/make_settings_tile.py, then fitted to 128 and 80 like any cover, RGB565 with
+ * 0x0000 written as 0x0001 (opaque, like the All games tile). If the file is missing,
+ * a flat tile in the gutter color is used. make_cover_pack.py reads the same file.
+ */
+export const SETTINGS_TILE_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'tiles', 'settings-384.png');
+
+/** The 384 x 384 picture, from the PNG, or the flat fallback. */
+export function settingsTileImage(): RGBImage {
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(SETTINGS_TILE_FILE);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    const flat = newImage(TILE_BASE, TILE_BASE);
+    for (let i = 0; i < flat.data.length; i += 3) flat.data.set(TILE_GUTTER_RGB, i);
+    return flat;
+  }
+  const png = PNG.sync.read(buf);
+  if (png.width !== TILE_BASE || png.height !== TILE_BASE) throw new Error('settings-384.png must be 384 x 384');
+  const im = newImage(TILE_BASE, TILE_BASE);
+  for (let i = 0, n = TILE_BASE * TILE_BASE; i < n; i++) im.data.set(png.data.subarray(i * 4, i * 4 + 3), i * 3);
+  return im;
+}
+
+let settingsMemo: Buffer | null = null;
+
+/** The Settings tile's 45568 byte art blob: 128 x 128, then 80 x 80. The same every time. */
+export function settingsTileBlob(): Buffer {
+  if (!settingsMemo) {
+    const im = settingsTileImage();
+    settingsMemo = Buffer.concat([opaque565(fit(im, CEN)), opaque565(fit(im, TH))]);
+  }
+  return settingsMemo;
+}

@@ -103,6 +103,26 @@
         "extensions": [
           "cfg"
         ]
+      },
+      {
+        "id": 106,
+        "name": "Recent",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "cfg"
+        ]
+      },
+      {
+        "id": 107,
+        "name": "Settings",
+        "required": false,
+        "deferload": true,
+        "parameters": "0x0",
+        "extensions": [
+          "cfg"
+        ]
       }
     ]
   }

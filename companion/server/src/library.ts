@@ -10,7 +10,9 @@ import { trackPaths } from './romPaths.js';
 import { loadDats, type DatIndex } from './dat.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
 import { autoMatchCached, cleanTitle, type MatchStatus } from './match.js';
-import { PACK_HEAD_MAX, TITLE_MAX, asciiTitle, compareTitles, pathProblems, readPackSummary, type PlayHistory } from './pack.js';
+import { PACK_HEAD_MAX, REC_MAX, TITLE_MAX, asciiTitle, compareTitles, pathProblems, readPackSummary } from './pack.js';
+import { historyWithCard, readRecentCfg } from './history.js';
+import { readPocketSettings, type PocketSettingsInfo } from './pocketsettings.js';
 import { choosePack } from './core.js';
 import { codepointCompare, fileCrc, flushCrcCache, isRomName, scanLibrary, scanRoms, type LibraryFile } from './roms.js';
 import { loadThumbs, REPOS, type ThumbIndex } from './thumbs.js';
@@ -70,8 +72,6 @@ export interface Game {
   artLabel: string | null;
   status: GameStatus;
   favorite: boolean;
-  /** When it was last played on the Pocket (ms). Null until the core records play history. */
-  lastPlayed: number | null;
   problems: string[];
 }
 
@@ -83,6 +83,8 @@ export interface CardInfo {
   totalBytes: number | null;
   covers: { exists: boolean; bytes: number; modifiedAt: string | null; count: number | null; titles: string[] };
   manifest: { exists: boolean; placed: number; error?: string };
+  /** The Pocket's own settings (settings.cfg), read only. */
+  pocketSettings: PocketSettingsInfo;
 }
 
 export interface Library {
@@ -101,6 +103,14 @@ export interface Library {
   /** How many games the pack holds: 31 for v6, 2047 for v7. */
   maxGames: number;
   packVersion: number;
+  /**
+   * Recently played, newest first: the CRCs of up to 32 games in the menu, from the app's
+   * play history and the launches in the card's recent.cfg not synced yet. The same games
+   * the next pack's REC1 block holds (with the streaming core).
+   */
+  recent: string[];
+  /** Launches in the card's recent.cfg that the next sync saves. */
+  recentPending: number;
   /** Games whose choices moved to a new dump, not shown yet. */
   migrated: { id: string; title: string; kept: string[]; reason: 'library' | 'card'; where: string }[];
   /** Which pack the card gets and why. */
@@ -139,15 +149,6 @@ function coversInfo(root: string): CardInfo['covers'] {
   } catch {
     return { exists: false, bytes: 0, modifiedAt: null, count: null, titles: [] };
   }
-}
-
-/**
- * Play history from the card. Always empty for now: the streaming core will
- * write Saves/gbc/common/launcher.cfg with, per CRC, the last time a game was
- * played. Parse it here and the Pocket view and the pack order pick it up.
- */
-export function playHistory(_card: string | null): PlayHistory {
-  return new Map();
 }
 
 export function cardRomDir(card: string): string {
@@ -368,7 +369,6 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
   }
 
   const [dats, thumbs] = await Promise.all([loadDats(), loadThumbs()]);
-  const played = playHistory(card);
 
   // Card copies kept instead of a library game take that game's choices.
   const parentOf = new Map<string, string>();
@@ -423,7 +423,6 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
       artLabel: artLabel(art),
       status,
       favorite: choice.favorite === true,
-      lastPlayed: played.get(crc) ?? null,
       problems: pathProblems(PACK_PLATFORM, file),
     };
   };
@@ -462,13 +461,23 @@ export async function buildLibrary(opts: LibraryOptions): Promise<Library> {
       ...folderSpace(card),
       covers: coversInfo(card),
       manifest: { exists: !!manifest?.exists, placed: manifest?.manifest.placed.length ?? 0, error: manifest?.error },
+      pocketSettings: readPocketSettings(card),
     };
   }
+
+  // Recently played: history plus the card's launches not synced yet, games in the menu only.
+  const recentCfg = card ? readRecentCfg(card) : null;
+  const inMenu = new Set(games.filter((g) => g.cardState !== 'cardKept' && !g.problems.length).map((g) => g.crc));
+  const recent = historyWithCard(recentCfg)
+    .filter((crc) => inMenu.has(crc))
+    .slice(0, REC_MAX);
 
   return {
     source,
     card: cardInfo,
     games,
+    recent,
+    recentPending: recentCfg?.launches.length ?? 0,
     migrated: loadChoices()
       .migrations.filter((m) => !m.seen)
       .map((m) => ({ id: m.id, title: games.find((g) => g.crc === m.to)?.title ?? m.where, kept: m.kept, reason: m.reason, where: m.where })),

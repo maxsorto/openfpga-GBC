@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, subscribeSync, type SyncEvent, type SyncPhase, type SyncPlan } from './api';
-import { IconCard, IconCheck, IconClose, IconEject, IconStar, IconWarn } from './Icons';
+import { IconCard, IconCheck, IconClock, IconClose, IconEject, IconStar, IconWarn } from './Icons';
 import { fmtBytes, isVolumePath, words } from './util';
 
 type Stage = 'planning' | 'plan' | 'running' | 'done' | 'error';
@@ -318,6 +318,16 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                   </div>
                 </div>
               )}
+              {plan.recent.cfg && plan.recent.cfg.launches > 0 && (
+                <div className="notice ok">
+                  <IconClock />
+                  <div>
+                    {plan.recent.cfg.launches} {plan.recent.cfg.launches === 1 ? 'game launch' : 'game launches'} on the Pocket since the last sync. Sync adds{' '}
+                    {plan.recent.cfg.launches === 1 ? 'it' : 'them'} to the play history here
+                    {plan.pack.version >= 7 ? ', puts the newest games in Recent mode in covers.bin,' : ''} then empties recent.cfg.
+                  </div>
+                </div>
+              )}
               {plan.carryOver.length > 0 && (
                 <div className="notice ok">
                   <IconCheck />
@@ -534,8 +544,8 @@ export function SyncModal({ card, isPocket, onClose }: Props) {
                 </details>
               </div>
               <p className="plan-foot dim">
-                Battery saves (.sav) are never touched. Under Saves, sync only empties favorites.cfg and carts.cfg after saving what is in them, and
-                a suspend point made with a different ROM, after keeping a copy.
+                Battery saves (.sav) and the Pocket's settings.cfg are never touched. Under Saves, sync only empties favorites.cfg, carts.cfg and
+                recent.cfg after saving what is in them, and a suspend point made with a different ROM, after keeping a copy.
               </p>
             </>
           )}

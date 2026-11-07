@@ -6,9 +6,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { COVERS_REL } from './config.js';
-import { buildLibrary, cardRomDir, listCardRoms, playHistory, type Game, type Library } from './library.js';
+import { buildLibrary, cardRomDir, listCardRoms, type Game, type Library } from './library.js';
+import { historyWithCard, readRecentCfg } from './history.js';
+import { readPocketSettings, type PocketSettingsInfo } from './pocketsettings.js';
 import { readManifest, type ManifestEntry } from './manifest.js';
-import { ROM_PATH_MAX_V7, gamePaths, menuList, packWriter, type MenuItem } from './pack.js';
+import { REC_MAX, ROM_PATH_MAX_V7, gamePaths, menuList, packWriter, type MenuItem } from './pack.js';
 import { fileCrc } from './roms.js';
 import { readPocketFavorites, type PocketFavorites } from './pocketfav.js';
 import { loadChoices, pendingMove } from './choices.js';
@@ -108,6 +110,17 @@ export interface SyncPlan {
    * choices the new one does not have yet move to it when sync places it.
    */
   carryOver: { from: string; to: string; file: string; title: string; kept: string[] }[];
+  /**
+   * Games played on the Pocket. cfg: the card's recent.cfg, whose launches sync saves in the
+   * app's play history before it empties the file (null when missing or unreadable).
+   * games: what the pack's REC1 block holds, newest first (v7; empty for v6).
+   */
+  recent: {
+    cfg: { file: string; n: number; launches: number; sha: string } | null;
+    games: { crc: string; title: string }[];
+  };
+  /** The Pocket's own settings (settings.cfg). Read only: sync never writes it. */
+  pocketSettings: PocketSettingsInfo;
   /** Favorites changed on the Pocket (favorites.cfg). Sync saves them in the app, then empties the file. */
   pocketFavorites: (Omit<PocketFavorites, 'changes'> & { changes: { crc: string; favorite: boolean; titles: string[] }[] }) | null;
   /** ROM files on the card the app did not place, adopt or replace. Never touched. */
@@ -133,9 +146,8 @@ export interface SyncPlan {
     reason: string;
     titles: string[];
     crcs: string[];
-    /** Entries in the favorites and played sections at the top. */
+    /** Entries in the favorites section at the top. */
     favCount: number;
-    playedCount: number;
     /** Entries in the browsable menu. The rest are cartridge-only entries. */
     listCount: number;
     /** Left out of the pack because their path is too long for the core. */
@@ -198,6 +210,8 @@ export interface PlanResult {
   packItems: MenuItem<Game>[];
   /** Cartridge-only entries, after the browsable list (v7). */
   cartItems: CartEntry[];
+  /** Play history CRCs, newest first, with the card's unsaved launches: what the writer's REC1 is made from. */
+  recent: string[];
   manifestPlaced: ManifestEntry[];
 }
 
@@ -418,8 +432,14 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
 
   const writer = packWriter(library.pack.version);
   const menu = library.games.filter((g) => g.cardState !== 'cardKept');
-  const list = menuList(menu, playHistory(card), writer.version >= 7);
+  const list = menuList(menu, writer.version >= 7);
   const packItems = list.filter((it) => !it.game.problems.length).slice(0, writer.maxGames);
+  // Games played on the Pocket: saved history plus the launches in recent.cfg. REC1 (v7)
+  // holds the newest 32 that are in the A to Z list.
+  const recentCfg = readRecentCfg(card);
+  const recent = historyWithCard(recentCfg);
+  const azGames = new Map(packItems.filter((it) => it.section === 'az').map((it) => [it.game.crc, it.game]));
+  const recentGames = writer.version >= 7 ? recent.filter((crc) => azGames.has(crc)).slice(0, REC_MAX).map((crc) => ({ crc, title: azGames.get(crc)!.title })) : [];
   // Carts seen on the Pocket: the identified ones that are not games you have go after the list (v7 only).
   const { cfg: cartsCfg, carts } = await cartViews(card, menu);
   const cartItems: CartEntry[] =
@@ -462,6 +482,11 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       .filter((c) => c.reason === 'replace' && c.replacesCrc && c.replacesCrc !== c.crc)
       .map((c) => ({ from: c.replacesCrc!, to: c.crc, file: c.file, title: c.title, kept: pendingMove(c.replacesCrc!, c.crc).kept }))
       .filter((x) => x.kept.length > 0),
+    recent: {
+      cfg: recentCfg ? { file: recentCfg.file, n: recentCfg.n, launches: recentCfg.launches.length, sha: recentCfg.sha } : null,
+      games: recentGames,
+    },
+    pocketSettings: readPocketSettings(card),
     pocketFavorites: pocketFav
       ? {
           ...pocketFav,
@@ -487,7 +512,6 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
       titles: [...packGames.map((g) => g.title), ...cartItems.map((c) => c.title)],
       crcs: [...packGames.map((g) => g.crc), ...cartItems.map((c) => c.id)],
       favCount: packItems.filter((it) => it.section === 'favorite').length,
-      playedCount: packItems.filter((it) => it.section === 'played').length,
       skipped: menu.filter((g) => g.problems.length).map((g) => g.file),
       cutPaths:
         writer.version >= 7
@@ -523,6 +547,8 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
         suspends.map((x) => [x.file, x.size, x.oldCrc, x.newCrc]),
         pocketFav?.sha ?? null,
         cartsCfg?.sha ?? null,
+        recentCfg?.sha ?? null,
+        recentGames.map((g) => g.crc),
         cartItems.map((c) => [c.id, c.title, c.art]),
         writer.version,
         packItems.map((it) => [it.game.crc, it.game.title, it.game.file, it.game.art, it.section, it.game.favorite]),
@@ -530,5 +556,5 @@ export async function makePlan(opts: PlanOptions): Promise<PlanResult> {
     )
     .digest('hex')
     .slice(0, 16);
-  return { plan, library, packItems, cartItems, manifestPlaced: placed };
+  return { plan, library, packItems, cartItems, recent, manifestPlaced: placed };
 }

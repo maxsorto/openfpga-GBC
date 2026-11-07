@@ -12,7 +12,7 @@ export interface Choice {
   title?: string;
   art?: ArtRef;
   /**
-   * Starred. Favorites come first on the Pocket, after recently played games.
+   * Starred. Favorites come first on the Pocket.
    * false is kept too: a card copy that inherits a star can be unstarred on its own.
    */
   favorite?: boolean;

@@ -37,7 +37,6 @@ export function cartAsGame(c: Cart): Game {
     artLabel: null,
     status: c.status,
     favorite: false,
-    lastPlayed: null,
     problems: [],
   };
 }

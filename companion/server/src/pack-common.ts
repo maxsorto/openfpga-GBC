@@ -30,9 +30,9 @@ export interface PackEntry {
   /** Starred. v7 sets entry flags bit 1 on every entry of a favorite game. */
   favorite?: boolean;
   /**
-   * Which part of the menu this entry is in: the played section and the favorites
-   * section at the top, then the A to Z list. v7 counts the top sections in its
-   * letter index. Left out, an entry is in the A to Z list.
+   * Which part of the menu this entry is in: the favorites section at the top, then the
+   * A to Z list, then (v7) cartridge-only entries. v7 counts the favorites in its letter
+   * index. Left out, an entry is in the A to Z list.
    */
   section?: MenuSection;
   /**
@@ -54,7 +54,7 @@ export interface PackEntry {
  * Where an entry's game sits in the list, the same on every entry of that game:
  *   favPos: its place in the favorites section, 0 based, or -1 if it is not a favorite
  *   azPos:  the pack index of its entry in the A to Z list (for that entry, its own index;
- *           for its copy in the favorites or played section, its twin's), or -1 if none
+ *           for its copy in the favorites section, its twin's), or -1 if none
  */
 export interface EntryPlace {
   favPos: number;
@@ -78,10 +78,11 @@ export function hasFavorites(games: PackEntry[]): boolean {
 }
 
 /**
- * played, favorite and az make the browsable menu. cart entries (v7) come after it:
- * carts seen on the Pocket that have no ROM on the card, found only by Play Cartridge.
+ * favorite and az make the browsable menu. cart entries (v7) come after it: carts seen
+ * on the Pocket that have no ROM on the card, found only by Play Cartridge. There is no
+ * played section: play history goes in v7's REC1 block instead.
  */
-export type MenuSection = 'played' | 'favorite' | 'az' | 'cart';
+export type MenuSection = 'favorite' | 'az' | 'cart';
 
 /** A game with its art decoded, for building a pack in memory (tests, small packs). */
 export interface PackGame extends PackEntry {
@@ -174,8 +175,9 @@ export const BLOB_BYTES = (CEN * CEN + TH * TH) * 2;
  *   blobs, count x stride B (the art, then zeros up to the stride)
  *   path structs, count x 3 x 256 B: ROM, .sav, .sus
  *   one 256 B path struct: /Saves/<platform>/common/picker.log
- *   v7 only: one more, /Saves/<platform>/common/favorites.cfg (the core finds it at
- *   paths0 + (count * 3 + 1) * 256, so it must follow the log one)
+ *   v7 only: four more, the trailer: favorites.cfg, carts.cfg, recent.cfg, settings.cfg,
+ *   all in /Saves/<platform>/common (the core finds struct k at paths0 + (count * 3 + k) * 256:
+ *   0 the log, 1 favorites, 2 carts, 3 recent, 4 settings, so the order is fixed)
  */
 export interface PackFormat {
   version: number;
@@ -185,7 +187,7 @@ export interface PackFormat {
   /** One entry, with where its game sits in the list (see EntryPlace). */
   entry(g: PackEntry, place: EntryPlace): Buffer;
   /** The 512 reserved bytes after the header. Zeros when not given. */
-  reserved?(games: PackEntry[]): Buffer;
+  reserved?(games: PackEntry[], opts: PackBuildOptions): Buffer;
   /** Path structs after the picker.log one, for files the core opens by name. */
   trailer?(platform: string): string[];
   /**
@@ -206,6 +208,11 @@ export interface PackBuildOptions {
   onProgress?: (done: number) => void;
   /** The All games tile's art blob, for a streamed pack with favorites (v7). Built for you in memory builds. */
   allGamesTile?: Buffer;
+  /**
+   * Play history, newest first, as ROM CRC32s (8 hex digits). v7 writes the first 32 of
+   * these that are in the A to Z list as the REC1 block, for the Pocket's Recent mode.
+   */
+  recent?: string[];
 }
 
 /** File offset of the first path struct. */
@@ -233,7 +240,7 @@ function checkGames(fmt: PackFormat, games: PackEntry[]): void {
   }
 }
 
-function header(fmt: PackFormat, games: PackEntry[]): Buffer {
+function header(fmt: PackFormat, games: PackEntry[], opts: PackBuildOptions): Buffer {
   const h = Buffer.alloc(HEADER_BYTES + RESERVED_BYTES);
   h.write('GBCV', 0, 'ascii');
   h.writeUInt16LE(fmt.version, 4);
@@ -241,7 +248,7 @@ function header(fmt: PackFormat, games: PackEntry[]): Buffer {
   h.writeUInt16LE(CEN, 8);
   h.writeUInt16LE(TH, 10);
   if (fmt.reserved) {
-    const r = fmt.reserved(games);
+    const r = fmt.reserved(games, opts);
     if (r.length !== RESERVED_BYTES) throw new Error('Reserved area must be 512 bytes');
     r.copy(h, HEADER_BYTES);
   }
@@ -278,7 +285,7 @@ export function buildPackWith(fmt: PackFormat, gamesIn: PackGame[], opts: PackBu
   const arts = arranged.map((g) => artBlobAndAccent(g.art));
   const games = arranged.map((g, i) => ({ ...g, accent: g.accent ?? arts[i].accent }));
   const places = entryPlaces(games);
-  const parts: Buffer[] = [header(fmt, games), ...games.map((g, i) => fmt.entry(g, places[i]))];
+  const parts: Buffer[] = [header(fmt, games, opts), ...games.map((g, i) => fmt.entry(g, places[i]))];
   games.forEach((_, i) => {
     parts.push(padBlob(fmt, arts[i].blob));
     opts.onProgress?.(i + 1);
@@ -309,7 +316,7 @@ export async function writePackWith(
     await sink(b);
     written += b.length;
   };
-  await put(header(fmt, games));
+  await put(header(fmt, games, opts));
   const places = entryPlaces(games);
   await put(Buffer.concat(games.map((g, i) => fmt.entry(g, places[i]))));
   for (let i = 0; i < games.length; i++) {
@@ -372,6 +379,8 @@ export interface PackSummary {
   index: PackIndex | null;
   /** v7 only: where the cartridge fingerprint table is ("FPR2" at file offset 80). */
   fingerprints: { offset: number; count: number } | null;
+  /** v7 only: the "REC1" block at file offset 128, the az index of each recent game, newest first. */
+  recent: number[] | null;
 }
 
 /** Read the header and entries back from the start of a pack, for display and checks. */
@@ -412,7 +421,12 @@ export function readPackSummary(buf: Buffer): PackSummary | null {
   if (version >= 7 && buf.length >= 116 && buf.toString('ascii', 96, 100) === 'CRT1') {
     carts = { artOffset: buf.readUInt32LE(100), listCount: buf.readUInt16LE(104), flags: buf.readUInt16LE(106), accents: [108, 110, 112].map((o) => buf.readUInt16LE(o)) };
   }
-  return { version, count, titles, roms, crcs, flags, accents, favPos, azPos, carts, index, fingerprints };
+  let recent: number[] | null = null;
+  if (version >= 7 && buf.length >= 136 && buf.toString('ascii', 128, 132) === 'REC1') {
+    const n = Math.min(buf.readUInt16LE(132), 32, Math.floor((buf.length - 136) / 2));
+    recent = Array.from({ length: n }, (_, i) => buf.readUInt16LE(136 + i * 2));
+  }
+  return { version, count, titles, roms, crcs, flags, accents, favPos, azPos, carts, index, fingerprints, recent };
 }
 
 /** Bytes to read from the start of a pack to get every entry. */

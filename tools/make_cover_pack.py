@@ -16,7 +16,8 @@ on both entries of a favorite, else 0xFFFF. az_pos (bytes 126, 127): the index o
 index there; its twin's on the favorites copy).
 Entry flags: bit 0 = original Game Boy, bit 1 = favorite (--favorite), bit 2 = cartridge only (never set here).
 accent = RGB565 color of the cover, for the core's glow (see accent()).
-After the picker.log path struct, v7 has two more: /Saves/<platform>/common/favorites.cfg, then carts.cfg.
+After the picker.log path struct, v7 has four more: /Saves/<platform>/common/favorites.cfg, carts.cfg, recent.cfg,
+settings.cfg (the core finds struct k at paths0 + (n * 3 + k) * 256: 0 log, 1 favorites, 2 carts, 3 recent, 4 settings).
 v7 unrecognized carts: at file offset 96, "CRT1" | u32 default art offset | u16 list_count | u16 flags (bit 0:
 carts.cfg struct present) | 3 x u16 default art accents | u16 0. list_count is the browsable menu; the app adds
 cartridge-only entries after it (this tool does not, so list_count = count). The default art (gray DMG, black
@@ -25,10 +26,13 @@ RGB565 0x0000 is transparent there. CRT1 flags bit 2: image 3 is the empty slot 
 for the core's "No cartridge" view; written when those PNGs exist. Bit 3 (always set): entries carry fav_pos and az_pos. The All games tile then follows as image 4. Art is read from companion/server/assets/carts/{dmg,dual,cgb}-{128,80}.png,
 or drawn as a placeholder when those are missing (same drawing as the app). CRT1 flags bit 1: one more image follows,
 the All games tile Favorites mode shows after the favorites (opaque, 0x0000 written as 0x0001); written whenever
-there are favorites (--favorite). It is a 3 x 3 mosaic of covers from the A to Z list with a dark band and the
+there are favorites (--favorite). CRT1 flags bit 4 (always set, build 26): the Settings tile ends the default art
+(companion/server/assets/tiles/settings-384.png fitted to 128 and 80, opaque like the All games tile), the trailer
+has recent.cfg and settings.cfg, and the reserved area has REC1 at file offset 128: "REC1" | u16 n | u16 0 |
+n x u16 az index, most recent first. This tool has no play history, so n = 0. It is a 3 x 3 mosaic of covers from the A to Z list with a dark band and the
 label from companion/server/assets/tiles/all-games-384.png (made by make_tile_label.py).
 v7 cartridge fingerprints, for Play Cartridge: at file offset 80, "FPR2" | u32 table offset | u16 entry count | u16 0.
-The table follows the carts.cfg struct on a 4 byte boundary, before the default art: 8 bytes per entry, ROM bytes
+The table follows the settings.cfg struct on a 4 byte boundary, before the default art: 8 bytes per entry, ROM bytes
 0x14E, 0x14F (global checksum), 0x14D (header checksum), 0x143 (CGB flag), then u32 LE zlib CRC32 of the 11 byte
 title area 0x134..0x13E; 8 zeros if the ROM is shorter than 0x150. The core matches the revision, then the title.
 v7 games are in letter order: titles that start with anything but A to Z first ('#'), then A to Z, each
@@ -152,6 +156,8 @@ def fit(img, size):
 TILE_B, TILE_G, TILE_CELL, TILE_BAND = 384, 6, 120, 256  # the All games tile, built at 384 x 384
 TILE_GUTTER = (16, 16, 20)
 TILE_LABEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "companion", "server", "assets", "tiles", "all-games-384.png")
+SETTINGS_TILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "companion", "server", "assets", "tiles", "settings-384.png")
+REC_AT = 128  # file offset of "REC1", after CRT1
 
 def tile_picks(az, favset, has_art):
     """The 9 covers for the All games tile: from the A to Z list, not favorites, the middle of each ninth;
@@ -176,8 +182,15 @@ def all_games_tile(images):
                 p = (px[o + ch] * 72) >> 8
                 px[o + ch] = (p * (255 - al) + 255 * al + 127) // 255
     m = Image.frombytes("RGB", (TILE_B, TILE_B), bytes(px))
-    opaque = lambda im: b"".join(struct.pack("<H", rgb565(p) or 1) for p in im.getdata())  # no 0x0000: drawn like a cover
-    return opaque(fit(m, CEN)) + opaque(fit(m, TH))
+    return opaque565(fit(m, CEN)) + opaque565(fit(m, TH))
+
+def opaque565(im): return b"".join(struct.pack("<H", rgb565(p) or 1) for p in im.getdata())  # no 0x0000: drawn like a cover
+
+def settings_tile():
+    """The Settings stop's cover: settings-384.png (made by companion/server/scripts/make_settings_tile.py) fitted like
+    a cover, opaque; a flat tile in the gutter color if the file is missing. Same steps as tile.ts in the app."""
+    m = Image.open(SETTINGS_TILE).convert("RGB") if os.path.exists(SETTINGS_TILE) else Image.new("RGB", (TILE_B, TILE_B), TILE_GUTTER)
+    return opaque565(fit(m, CEN)) + opaque565(fit(m, TH))
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--roms", required=True); ap.add_argument("--covers", required=True)
@@ -229,7 +242,7 @@ def main():
     n = len(menu)
     fav_count = sum(1 for _, sec in menu if sec == "favorite")
     paths0 = 16 + 512 + n * (128 + STRIDE7)
-    table_at = (paths0 + (n * 3 + 3) * 256 + 3) & ~3  # after the carts.cfg struct, 4 byte aligned
+    table_at = (paths0 + (n * 3 + 5) * 256 + 3) & ~3  # after the settings.cfg struct, 4 byte aligned
     art_at = (table_at + n * 8 + 4095) & ~4095  # default cart art, 4096 aligned
     tile = None
     if a.v7 and fav_count:  # Favorites mode's closing cover, after the three cartridges
@@ -241,7 +254,8 @@ def main():
     if a.v7:
         reserved = bytearray(index_block([stem_of(r) for r, _ in menu], fav_count=fav_count))
         reserved[FPR_AT - 16:FPR_AT - 16 + 12] = struct.pack("<4sIHH", b"FPR2", table_at, n, 0)
-        reserved[CRT_AT - 16:CRT_AT - 16 + 20] = struct.pack("<4sIHH3HH", b"CRT1", art_at, n, 1 | (2 if tile else 0) | (4 if empty else 0) | 8, *CART_ACCENTS, 0)
+        reserved[CRT_AT - 16:CRT_AT - 16 + 20] = struct.pack("<4sIHH3HH", b"CRT1", art_at, n, 1 | (2 if tile else 0) | (4 if empty else 0) | 8 | 16, *CART_ACCENTS, 0)
+        reserved[REC_AT - 16:REC_AT - 16 + 8] = struct.pack("<4sHH", b"REC1", 0, 0)  # no play history here
     with open(a.out, "wb") as f:
         f.write(struct.pack("<4sHHHH4x", b"GBCV", 7 if a.v7 else 6, n, CEN, TH))
         f.write(bytes(reserved))
@@ -252,12 +266,15 @@ def main():
         if a.v7:  # the core opens favorites.cfg through this struct, right after the log one
             f.write(f"/Saves/{a.platform}/common/favorites.cfg".encode().ljust(256, b"\0"))
             f.write(f"/Saves/{a.platform}/common/carts.cfg".encode().ljust(256, b"\0"))
+            f.write(f"/Saves/{a.platform}/common/recent.cfg".encode().ljust(256, b"\0"))
+            f.write(f"/Saves/{a.platform}/common/settings.cfg".encode().ljust(256, b"\0"))
             f.write(bytes(table_at - f.tell()))
             f.write(b"".join(fingerprint(os.path.join(a.roms, r)) for r, _ in menu))
             f.write(bytes(art_at - f.tell()))
             f.write(b"".join(cart_blob(k).ljust(STRIDE7, b"\0") for k in CART_KINDS))
             if empty: f.write(empty.ljust(STRIDE7, b"\0"))  # image 3: the empty slot
             if tile: f.write(tile.ljust(STRIDE7, b"\0"))  # then the All games tile
+            f.write(settings_tile().ljust(STRIDE7, b"\0"))  # last, the Settings tile
     print(f"wrote {a.out}: {n} entries, {os.path.getsize(a.out)} bytes")
 
 if __name__ == "__main__": main()

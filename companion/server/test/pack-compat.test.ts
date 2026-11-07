@@ -21,6 +21,7 @@ import {
   packWriter,
   readPackSummary,
   BLOB_BYTES,
+  CRT_HAS_V26,
   ENTRY_BYTES,
   NO_SECTION,
   STRIDE_V7,
@@ -31,7 +32,37 @@ import { crc32, romFingerprint } from '../src/roms.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, '.out', 'pack');
-const MAKE_PACK = path.resolve(HERE, '../../../tools/make_cover_pack.py');
+// COVER_PICKER_MAKE_PACK points the tests at another copy of the Python tool.
+const MAKE_PACK = process.env.COVER_PICKER_MAKE_PACK ?? path.resolve(HERE, '../../../tools/make_cover_pack.py');
+
+/**
+ * The app always writes build 26 packs (CRT1 flags bit 4): REC1 at offset 128, recent.cfg and
+ * settings.cfg after carts.cfg, the Settings tile last. When the Python tool does not write
+ * those yet, compare against the app's pack with exactly those three things taken out
+ * (everything after the trailer moves back by two path structs and the alignment that
+ * follows). Once the tool sets bit 4, the files are compared as they are.
+ */
+function asPython(ts: Buffer, py: Buffer): Buffer {
+  if (ts.readUInt16LE(4) !== 7 || ts.toString('ascii', 96, 100) !== 'CRT1') return ts;
+  if (py.length >= 108 && py.toString('ascii', 96, 100) === 'CRT1' && py.readUInt16LE(106) & CRT_HAS_V26) return ts;
+  const n = ts.readUInt16LE(6);
+  const paths0 = 528 + n * (128 + STRIDE_V7);
+  const table = ts.readUInt32LE(84);
+  const art = ts.readUInt32LE(100);
+  assert.equal(ts.toString('ascii', 128, 132), 'REC1');
+  const oldTable = (paths0 + (n * 3 + 3) * 256 + 3) & ~3;
+  const oldArt = (oldTable + n * 8 + 4095) & ~4095;
+  const images = (ts.length - art) / STRIDE_V7 - 1; // all but the Settings tile
+  const out = Buffer.alloc(oldArt + images * STRIDE_V7);
+  ts.copy(out, 0, 0, oldTable); // through the carts.cfg path struct
+  ts.copy(out, oldTable, table, table + n * 8);
+  ts.copy(out, oldArt, art, art + images * STRIDE_V7);
+  out.fill(0, 128, 136 + 2 * 32); // no REC1
+  out.writeUInt32LE(oldTable, 84);
+  out.writeUInt32LE(oldArt, 100);
+  out.writeUInt16LE(ts.readUInt16LE(106) & ~CRT_HAS_V26, 106);
+  return out;
+}
 
 function codepointSort(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -166,9 +197,9 @@ test('pack v7 is byte-identical to make_cover_pack.py --v7 (3 ROMs, all with art
   const py = runPython(f, path.join(OUT, 'v7-with-art', 'python.bin'), true);
   const v7 = packWriter(7);
   const ts = v7.build(letterOrder(await tsGames(f, 2047)));
-  assert.equal(py.length, v7.expectedSize(3));
-  assert.equal(ts.length, py.length, 'file size');
-  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  assert.equal(ts.length, v7.expectedSize(3));
+  assert.equal(asPython(ts, py).length, py.length, 'file size');
+  assert.equal(firstDiff(asPython(ts, py), py), -1, `first differing byte at offset ${firstDiff(asPython(ts, py), py)}`);
   const s = readPackSummary(ts)!;
   assert.equal(s.version, 7);
   assert.deepEqual(s.crcs, letterOrder(await tsGames(f, 2047)).map((g) => g.crc));
@@ -196,7 +227,7 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
   const games = letterOrder(await tsGames(f, 2047));
   assert.equal(games.length, 40);
   const built = v7.build(games);
-  assert.equal(firstDiff(built, py), -1, 'in-memory build matches Python');
+  assert.equal(firstDiff(asPython(built, py), py), -1, 'in-memory build matches Python');
 
   const chunks: Buffer[] = [];
   let biggest = 0;
@@ -208,8 +239,9 @@ test('pack v7 streamed write equals the in-memory build, and holds more than 31 
     chunks.push(c);
     biggest = Math.max(biggest, c.length);
   });
-  assert.equal(n, py.length);
-  assert.equal(firstDiff(Buffer.concat(chunks), py), -1, 'streamed write matches Python');
+  assert.equal(n, built.length);
+  assert.ok(Buffer.concat(chunks).equals(built), 'streamed write matches the in-memory build');
+  assert.equal(firstDiff(asPython(Buffer.concat(chunks), py), py), -1, 'streamed write matches Python');
   // The letter index: '#' first, missing letters 0xFFFF, starts in order.
   const idx = readPackSummary(built)!.index!;
   const titles = games.map((g) => g.title);
@@ -250,7 +282,7 @@ test('pack v7 fingerprints (FPR2) match make_cover_pack.py --v7, with a known ti
   fs.writeFileSync(path.join(f.roms, 'Known Header.gbc'), rom);
   const py = runPython(f, path.join(OUT, 'v7-fingerprints', 'python.bin'), true);
   const ts = packWriter(7).build(letterOrder(await tsGames(f, 2047)));
-  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  assert.equal(firstDiff(asPython(ts, py), py), -1, `first differing byte at offset ${firstDiff(asPython(ts, py), py)}`);
   const s = readPackSummary(ts)!;
   assert.equal(ts.toString('ascii', 80, 84), 'FPR2');
   assert.deepEqual(s.fingerprints, { offset: fingerprintTableOffset(2), count: 2 });
@@ -275,12 +307,12 @@ test('pack v7 with favorites matches make_cover_pack.py --v7 --favorite, All gam
   const v7 = packWriter(7);
   const ts = v7.build(list);
   assert.equal(ts.length, v7.expectedSize(16, true));
-  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  assert.equal(firstDiff(asPython(ts, py), py), -1, `first differing byte at offset ${firstDiff(asPython(ts, py), py)}`);
 
   const s = readPackSummary(ts)!;
   assert.deepEqual(s.titles.slice(0, 2), ['Kirby', 'Tetris']);
   assert.equal(s.index!.favCount, 2);
-  assert.equal(s.carts!.flags, 15); // carts.cfg path, the tile, the empty slot, and entry positions
+  assert.equal(s.carts!.flags, 31); // carts.cfg path, the tile, the empty slot, entry positions, build 26
   // Images: 0 dmg, 1 dual, 2 cgb, 3 the empty slot, 4 the All games tile.
   const emptyAt = s.carts!.artOffset + 3 * STRIDE_V7;
   assert.ok(ts.subarray(emptyAt, emptyAt + BLOB_BYTES).equals(emptySlotBlob()!));
@@ -297,7 +329,7 @@ test('pack v7 with favorites matches make_cover_pack.py --v7 --favorite, All gam
   const zelda = azIndex('Zelda');
   assert.deepEqual([s.favPos[zelda], s.azPos[zelda]], [0xffff, zelda]);
   for (let i = 2; i < s.count; i++) assert.equal(s.azPos[i], i, 'an A to Z entry points at itself');
-  assert.equal(ts.length, tileAt + STRIDE_V7);
+  assert.equal(ts.length, tileAt + 2 * STRIDE_V7, 'the Settings tile follows the All games tile and ends the file');
   const tile = ts.subarray(tileAt, tileAt + BLOB_BYTES);
   for (let i = 0; i < tile.length; i += 2) assert.notEqual(tile.readUInt16LE(i), 0);
 
@@ -309,7 +341,7 @@ test('pack v7 with favorites matches make_cover_pack.py --v7 --favorite, All gam
     return { ...g, accent: ba.accent, blob: async () => ba.blob };
   });
   await v7.write(stream, (c) => void chunks.push(c), { allGamesTile: blob });
-  assert.equal(firstDiff(Buffer.concat(chunks), py), -1, 'streamed matches Python');
+  assert.equal(firstDiff(asPython(Buffer.concat(chunks), py), py), -1, 'streamed matches Python');
   await assert.rejects(v7.write(stream, () => undefined), /All games tile/);
 });
 
@@ -330,7 +362,7 @@ test('pack v7 cuts the entry path to 71 bytes plus a NUL, same as make_cover_pac
   const f = makeFixture('v7-long-path', [[long, 4096], ['Short.gb', 4096]], [[long.replace(/\.gbc$/, '.png'), 80, 80], ['Short.png', 80, 80]]);
   const py = runPython(f, path.join(OUT, 'v7-long-path', 'python.bin'), true);
   const ts = packWriter(7).build(letterOrder(await tsGames(f, 2047)));
-  assert.equal(firstDiff(ts, py), -1, `first differing byte at offset ${firstDiff(ts, py)}`);
+  assert.equal(firstDiff(asPython(ts, py), py), -1, `first differing byte at offset ${firstDiff(asPython(ts, py), py)}`);
   const s = readPackSummary(ts)!;
   assert.equal(s.roms[0], `/Assets/gbc/common/${long}`.slice(0, 71));
   assert.equal(ts[528 + 52 + 71], 0, 'NUL after 71 bytes');

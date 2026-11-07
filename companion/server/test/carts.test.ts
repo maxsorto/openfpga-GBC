@@ -105,6 +105,7 @@ const { makePlan } = await import('../src/plan.js');
 const { runSync } = await import('../src/sync.js');
 const { readPackSummary, packWriter, defaultArtOffset, fingerprintTableOffset } = await import('../src/pack.js');
 const { placeholderCart, encodeKeyed, CART_ACCENTS, hasCartArtFiles, emptySlotBlob } = await import('../src/cartart.js');
+const { settingsTileBlob } = await import('../src/tile.js');
 const { accentOf } = await import('../src/accent.js');
 const { crc32 } = await import('../src/roms.js');
 
@@ -296,7 +297,7 @@ test('sync: identified carts become cartridge-only entries after the list, then 
   assert.equal(buf.length, packWriter(7).expectedSize(5));
   // CRT1 at 96: default art offset, list count, flags (carts.cfg path present), accents, 0.
   assert.equal(buf.toString('ascii', 96, 100), 'CRT1');
-  assert.deepEqual(s.carts, { artOffset: defaultArtOffset(5), listCount: 3, flags: 13, accents: [CART_ACCENTS.dmg, CART_ACCENTS.dual, CART_ACCENTS.cgb] });
+  assert.deepEqual(s.carts, { artOffset: defaultArtOffset(5), listCount: 3, flags: 29, accents: [CART_ACCENTS.dmg, CART_ACCENTS.dual, CART_ACCENTS.cgb] });
   assert.equal(buf.readUInt16LE(114), 0);
   assert.equal(s.carts!.artOffset % 4096, 0);
   // The letter index covers only the browsable list.
@@ -311,15 +312,17 @@ test('sync: identified carts become cartridge-only entries after the list, then 
   for (const i of [3, 4]) assert.equal(buf.readUInt32LE(528 + i * 128 + 44), 0);
   // Every entry has an accent.
   assert.ok(s.accents.every((a) => a !== 0), `accents ${s.accents.map((a) => a.toString(16))}`);
-  // Path structs: zeros for the carts; then the log, favorites.cfg and carts.cfg paths.
+  // Path structs: zeros for the carts; then the log, favorites.cfg, carts.cfg, recent.cfg and settings.cfg paths.
   const paths0 = 528 + 5 * (128 + 65536);
   const struct = (k: number) => buf.subarray(paths0 + k * 256, paths0 + (k + 1) * 256);
   for (let k = 9; k < 15; k++) assert.ok(struct(k).every((b) => b === 0), `path struct ${k}`);
   assert.equal(struct(15).toString('utf8').replace(/\0+$/, ''), '/Saves/gbc/common/picker.log');
   assert.equal(struct(16).toString('utf8').replace(/\0+$/, ''), '/Saves/gbc/common/favorites.cfg');
   assert.equal(struct(17).toString('utf8').replace(/\0+$/, ''), '/Saves/gbc/common/carts.cfg');
-  // FPR2, shifted by the carts.cfg path; the carts' records come from their logged headers.
-  assert.equal(s.fingerprints!.offset, paths0 + 18 * 256);
+  assert.equal(struct(18).toString('utf8').replace(/\0+$/, ''), '/Saves/gbc/common/recent.cfg');
+  assert.equal(struct(19).toString('utf8').replace(/\0+$/, ''), '/Saves/gbc/common/settings.cfg');
+  // FPR2, after the trailer; the carts' records come from their logged headers.
+  assert.equal(s.fingerprints!.offset, paths0 + 20 * 256);
   assert.equal(s.fingerprints!.offset, fingerprintTableOffset(5));
   const rec = (i: number) => buf.subarray(s.fingerprints!.offset + i * 8, s.fingerprints!.offset + i * 8 + 8);
   assert.ok(rec(3).equals(carts.decodeHeader(CRYSTAL).fingerprint));
@@ -328,9 +331,13 @@ test('sync: identified carts become cartridge-only entries after the list, then 
   const art0 = buf.subarray(s.carts!.artOffset, s.carts!.artOffset + 45568);
   if (!hasCartArtFiles()) assert.ok(art0.subarray(0, 128 * 128 * 2).equals(encodeKeyed(placeholderCart('dmg', 128))));
   assert.equal(art0.readUInt16LE(0), 0, 'the corner of the cart image is transparent');
-  // Then image 3, the empty slot (flags bit 2), ending the file (no favorites, so no tile).
+  // Then image 3, the empty slot (flags bit 2); no favorites, so no All games tile; then the
+  // Settings tile as image 4 (flags bit 4), ending the file.
   assert.ok(buf.subarray(s.carts!.artOffset + 3 * 65536, s.carts!.artOffset + 3 * 65536 + 45568).equals(emptySlotBlob()!));
-  assert.equal(buf.length, s.carts!.artOffset + 4 * 65536);
+  assert.ok(buf.subarray(s.carts!.artOffset + 4 * 65536, s.carts!.artOffset + 4 * 65536 + 45568).equals(settingsTileBlob()));
+  assert.equal(buf.length, s.carts!.artOffset + 5 * 65536);
+  // REC1: the cart-only entries never show in Recent mode; nothing is played here.
+  assert.deepEqual(s.recent, []);
   // Cart-only entries have no favorites or A to Z place.
   assert.deepEqual([s.favPos[3], s.azPos[3], s.favPos[4], s.azPos[4]], [0xffff, 0xffff, 0xffff, 0xffff]);
 });

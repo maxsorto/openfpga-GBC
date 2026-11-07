@@ -10,7 +10,7 @@ import { letterGroup, type MenuSection, type PackWriter } from './pack-common.js
 
 export * from './pack-common.js';
 export { MAX_GAMES, PACK_VERSION, buildPack, expectedPackSize } from './pack-v6.js';
-export { CRT_HAS_EMPTY_SLOT, NO_PLACE, ROM_PATH_MAX_V7, defaultImageCount, CRT_OFFSET, FINGERPRINT_BYTES, FPR_OFFSET, MAX_GAMES_V7, NO_SECTION, PACK_V7, STRIDE_V7, defaultArtOffset, fingerprintTableOffset, letterIndex, listCount } from './pack-v7.js';
+export { CRT_HAS_EMPTY_SLOT, CRT_HAS_V26, REC_MAX, REC_OFFSET, recentIndexes, NO_PLACE, ROM_PATH_MAX_V7, defaultImageCount, CRT_OFFSET, FINGERPRINT_BYTES, FPR_OFFSET, MAX_GAMES_V7, NO_SECTION, PACK_V7, STRIDE_V7, defaultArtOffset, fingerprintTableOffset, letterIndex, listCount } from './pack-v7.js';
 
 const WRITERS: Record<number, PackWriter> = { 6: packV6, 7: packV7 };
 
@@ -31,13 +31,6 @@ export interface Orderable {
 }
 
 /**
- * Play history by CRC: when each game was last played (ms since 1970).
- * Empty today. The core will write it to launcher.cfg, and the app will read
- * it on sync (see playHistory() in library.ts).
- */
-export type PlayHistory = Map<string, number>;
-
-/**
  * A to Z by title, the way the Pocket's letter index groups games: first the
  * titles that start with anything but A to Z ('#'), then A, B, ... Z, by the
  * first character of the title as the pack writes it. Within a letter, by title
@@ -53,39 +46,30 @@ export function compareTitles(a: Orderable, b: Orderable): number {
   return a.file < b.file ? -1 : a.file > b.file ? 1 : 0;
 }
 
-export type MenuGroup = 'played' | 'favorite' | 'rest';
-
 export interface MenuItem<T> {
   game: T;
   section: MenuSection;
 }
 
-export function menuGroup(g: Orderable, played: PlayHistory): MenuGroup {
-  return played.has(g.crc) ? 'played' : g.favorite ? 'favorite' : 'rest';
-}
-
 /**
- * Menu order on the Pocket: played games, most recent first; then favorites
- * A to Z; then everything else A to Z.
+ * Menu order on the Pocket: favorites A to Z, then everything else A to Z. Play
+ * history does not change it: v7 carries it in its REC1 block, for Recent mode.
  */
-export function menuOrder<T extends Orderable>(games: T[], played: PlayHistory = new Map()): T[] {
-  const groups: Record<MenuGroup, T[]> = { played: [], favorite: [], rest: [] };
-  for (const g of games) groups[menuGroup(g, played)].push(g);
-  groups.played.sort((a, b) => played.get(b.crc)! - played.get(a.crc)! || compareTitles(a, b));
-  groups.favorite.sort(compareTitles);
-  groups.rest.sort(compareTitles);
-  return [...groups.played, ...groups.favorite, ...groups.rest];
+export function menuOrder<T extends Orderable>(games: T[]): T[] {
+  const favorite = games.filter((g) => g.favorite).sort(compareTitles);
+  const rest = games.filter((g) => !g.favorite).sort(compareTitles);
+  return [...favorite, ...rest];
 }
 
 /**
  * The menu as pack entries. v6 (favoritesTwice false) is menuOrder(): each game
- * once. v7 (favoritesTwice true) keeps the played and favorites sections at the
- * top, then lists every game A to Z, so a favorite also shows under its letter.
+ * once. v7 (favoritesTwice true) keeps the favorites section at the top, then lists
+ * every game A to Z, so a favorite also shows under its letter.
  */
-export function menuList<T extends Orderable>(games: T[], played: PlayHistory, favoritesTwice: boolean): MenuItem<T>[] {
-  const ordered = menuOrder(games, played);
-  if (!favoritesTwice) return ordered.map((game) => ({ game, section: menuGroup(game, played) === 'rest' ? 'az' : (menuGroup(game, played) as MenuSection) }));
-  const top = ordered.filter((g) => menuGroup(g, played) !== 'rest').map((game) => ({ game, section: menuGroup(game, played) as MenuSection }));
+export function menuList<T extends Orderable>(games: T[], favoritesTwice: boolean): MenuItem<T>[] {
+  const ordered = menuOrder(games);
+  if (!favoritesTwice) return ordered.map((game) => ({ game, section: game.favorite ? 'favorite' : 'az' }));
+  const top = ordered.filter((g) => g.favorite).map((game) => ({ game, section: 'favorite' as const }));
   const all = [...games].sort(compareTitles).map((game) => ({ game, section: 'az' as const }));
   return [...top, ...all];
 }

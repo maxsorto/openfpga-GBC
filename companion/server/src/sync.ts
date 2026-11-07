@@ -13,10 +13,12 @@
  * slow card writes. Files the app renames or removes take their "._" sidecar with them.
  *
  * Only .gb and .gbc files in Assets/gbc/common, covers.bin and cover-picker.json are
- * ever written or removed in Assets. Under Saves, only two things are ever written:
- * favorites.cfg is emptied after its changes are saved, and a suspend point (.sus) made
- * with a different ROM than the one placed is copied to the Mac and emptied, because
- * resuming it would crash the core. Battery saves (.sav) are never touched.
+ * ever written or removed in Assets. Under Saves, only these are ever written:
+ * favorites.cfg, carts.cfg and recent.cfg are each emptied after what they hold is saved
+ * in the app (and only when they were read and have not changed since), and a suspend
+ * point (.sus) made with a different ROM than the one placed is copied to the Mac and
+ * emptied, because resuming it would crash the core. Battery saves (.sav) and the
+ * Pocket's settings.cfg are never touched.
  */
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
@@ -34,6 +36,7 @@ import type { ArtRef } from './choices.js';
 import { ChunkedWriter, copyFileChunked, hashFile, isOurPack, rememberWrittenPack, removeAppleDouble, sleep, withoutNewSidecar } from './io.js';
 import { migrateChoices, updateChoices } from './choices.js';
 import { emptyFavorites, favoritesPath } from './pocketfav.js';
+import { emptyRecentCfg, readRecentCfg, recentPath, recordLaunches } from './history.js';
 import type { PlanSuspend } from './plan.js';
 import { cardRomDir } from './library.js';
 import { isSafeRomFile, manifestPath, readManifest, serializeManifest, syncDir, writeFileSynced, writeManifest, type ManifestEntry } from './manifest.js';
@@ -195,7 +198,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
   emit({ type: 'phase', phase: 'check', message: 'Checking the card and the library' });
   // Let the first event reach the app before the plan is worked out again.
   await sleep(0);
-  const { plan, packItems, cartItems, manifestPlaced } = await makePlan(req);
+  const { plan, packItems, cartItems, recent, manifestPlaced } = await makePlan(req);
   const entryCount = packItems.length + cartItems.length;
   if (req.signature && req.signature !== plan.signature) {
     throw new Error('The library or the card changed since this plan was made. Close this and sync again to see the new plan.');
@@ -216,6 +219,16 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
     updateChoices(Object.fromEntries(plan.pocketFavorites.changes.map((c) => [c.crc, { favorite: c.favorite }])));
     const on = plan.pocketFavorites.changes.filter((c) => c.favorite).length;
     emit({ type: 'log', level: 'info', message: `Saved ${plan.pocketFavorites.changes.length} favorite changes from the Pocket (${on} starred, ${plan.pocketFavorites.changes.length - on} unstarred).` });
+  }
+
+  // Games played on the Pocket: save them in the play history first, so emptying recent.cfg later loses nothing.
+  let recentSaved = false;
+  if (plan.recent.cfg && plan.recent.cfg.n > 0) {
+    const cfg = readRecentCfg(card);
+    if (!cfg || cfg.sha !== plan.recent.cfg.sha) throw new Error('recent.cfg changed since this plan was made. Close this and sync again.');
+    recordLaunches(cfg.launches);
+    recentSaved = true;
+    if (cfg.launches.length) emit({ type: 'log', level: 'info', message: `Saved ${cfg.launches.length} game ${cfg.launches.length === 1 ? 'launch' : 'launches'} from the Pocket in the play history.` });
   }
 
   // Carts the Pocket logged: save them in the app first, so emptying carts.cfg later loses nothing.
@@ -407,7 +420,7 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
           }
           allGamesTile = allGamesTileBlob(covers);
         }
-        await writer.write(games, (chunk) => out.write(chunk), { logPlatform: PACK_PLATFORM, allGamesTile });
+        await writer.write(games, (chunk) => out.write(chunk), { logPlatform: PACK_PLATFORM, allGamesTile, recent });
         emit({ type: 'bytes', phase: 'pack', done: out.bytesWritten, total, flushing: true, label: 'Flushing to the card' });
         written = await out.close();
       } catch (e) {
@@ -472,6 +485,24 @@ export async function runSync(req: SyncRequest, emit: (e: SyncEvent) => void = (
       emit({ type: 'log', level: 'info', message: 'carts.cfg on the card is empty again.' });
     } else {
       emit({ type: 'log', level: 'warn', message: 'carts.cfg changed during sync, so it was left as it is. Sync again to pick up the new carts.' });
+    }
+  }
+
+  // The Pocket's launches are in the play history and in the pack now: empty recent.cfg, if it did not change.
+  if (recentSaved && plan.recent.cfg) {
+    const file = recentPath(card);
+    const now = (() => {
+      try {
+        return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      } catch {
+        return null;
+      }
+    })();
+    if (now === plan.recent.cfg.sha) {
+      await withoutNewSidecar(file, () => writeFileSynced(file, emptyRecentCfg()));
+      emit({ type: 'log', level: 'info', message: 'recent.cfg on the card is empty again.' });
+    } else {
+      emit({ type: 'log', level: 'warn', message: 'recent.cfg changed during sync, so it was left as it is. Sync again to pick up the new games.' });
     }
   }
 

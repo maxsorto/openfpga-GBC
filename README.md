@@ -48,7 +48,10 @@ This is a fork of budude2's openFPGA GBC core, which is a port of the MiSTer Gam
 | All games | Every game once, A to Z. L and R jump to the previous and next letter, which shows under the title. |
 | Legend | A third line under the position bar says what the buttons do right now: the face buttons as the Pocket's diamond with the one in question lit, the D-pad with its live arms, the Select pill, the two shoulders, each with one word. It changes with the context (list, grid, options, cartridge) and never lists a button that does nothing. |
 | Grid | Y rearranges the same covers into a grid of eight, 4 by 2, with the selection drawn larger and bright over its cell. The centre cover shrinks into its cell as the others fade in, over 12 frames. Left and Right walk the list cell by cell, wrapping at row ends; Up and Down move a row, and the rows scroll when the selection leaves the window; L and R jump by letter. Y or B morphs back to the cover flow. The grid stays on across Favorites and All games. |
-| Select | Steps through the Cartridge (the inserted one, or an empty slot drawing when there is none), Favorites, and All games. Each keeps your place. The mode shows under the title. |
+| Select | Steps through the Cartridge (the inserted one, or an empty slot drawing when there is none), Recent, Favorites, All games and Settings. A stop with nothing to show is skipped. Each keeps your place. The mode shows under the title. |
+| Recent | The last 32 games you launched, newest first. A launch moves a game to the front at once; the companion app keeps the history and puts it back in the pack on every sync. |
+| Settings | A gear cover at the end of the ring. Up and Down pick a setting, Left and Right change it: start in the cover flow, the grid, or whichever you used last; open on Favorites, Recent or All games; the legend on or off; sounds on or off. They live in `/Saves/gbc/common/settings.cfg`. |
+| First run | With no cover pack on the card, the menu says so and points to the companion app. A plays without covers, like the original core. |
 | Cartridge | The core reads the cart's header at boot and about once a second while the menu is open. If it matches a game in your pack (the exact revision, or failing that the same internal title), that cover drops in from the top as the list slides away below, seats with a small bounce, a ring of light, a shine and a click, and keeps a soft glow in the cover's own colors. A boots the real cart with the save on its own battery. Left, Right or Select lift it away and bring your list back where you left it. Pull the cart and the same happens, with CARTRIDGE REMOVED. |
 | Unknown carts | A cart that isn't in your library still drops in, as a drawing of its cartridge (gray, black or clear, like the real shells) with the title from its header, and A plays it. The core notes its header in `/Saves/gbc/common/carts.cfg`; on the next sync the companion app identifies the game and adds its box art, so the next time it shows its real cover. |
 | Options | X opens the selected game's options: Play, Start over (drops a suspend point and boots fresh), favorite on or off, Back. A star counts at once: unstarring in Favorites lifts the cover out and closes the gap, starring in All games adds the game to the end of Favorites. The changes also go to `favorites.cfg` and the companion app applies them on the next sync. |
@@ -88,6 +91,7 @@ A local web app: a Node backend that reads your ROM folder and the SD card, and 
 | Your card | ROMs already on the card are adopted under their current names, so their saves keep working. A card ROM with the same name as a library game but different contents is kept, because its save is tied to that name. If a ROM's contents change, its suspend point (a save state of the old ROM) is backed up and cleared; battery saves are never touched. |
 | Cartridges | The pack carries a fingerprint of every game (header checksums and internal title), so the core can recognize an inserted cart, even a different revision of a game you own. Carts the Pocket didn't know show up under Cartridges after a sync, named by their game code or title, with box art you can change. They go into the pack as cartridge-only entries: they don't appear in your list, only when that cart is inserted. |
 | Favorites from the Pocket | Stars changed on the Pocket (X, then favorite) are saved on the card and applied on the next sync. |
+| Recently played | Games launched on the Pocket are saved on the card and become the app's play history on the next sync, newest first; the 32 newest go into the pack for the Recent stop. The Pocket's settings show read only when a card is selected. |
 | Themes | DMG, and Game Boy Color with six shells. Atomic Purple shows the board through the plastic. |
 
 The app reads the core version on the card. With the streaming core it writes every game (up to 2047) to the pack; with an older core it writes the first 31 of the sync order.
@@ -182,11 +186,11 @@ Done:
 - Cartridges: the inserted cart drops in on its own cover with a seating animation and plays with its own save; unknown carts show as a cartridge and get their box art on the next sync
 - A grid view, morphing from the cover flow and back, with letter jumps on L and R in both views
 - A button legend on every screen, favorites that change on the Pocket at once, Home while a cartridge plays, an empty slot view, and a zoom into and out of a game
+- Recent (the last 32 games launched), a Settings stop (start view, opening list, legend, sounds) and a first run screen when the card has no pack
 - An on-card debug log and diagnostic squares for hardware bugs
 - The companion app: library by checksum, automatic box art, favorites, a sync plan that protects saves, two themes
 
 Next:
-- Play history (recently played first) and a settings screen
 - Copy a cartridge's save to the SD card from the cart's options, so the ROM version continues it
 - A web version of the companion app for Windows and Linux, and a release for the openFPGA cores inventory
 

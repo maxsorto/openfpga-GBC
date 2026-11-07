@@ -27,6 +27,7 @@ const { buildLibrary } = await import('../src/library.js');
 const { updateChoices } = await import('../src/choices.js');
 const { packWriter, readPackSummary } = await import('../src/pack.js');
 const { crc32 } = await import('../src/roms.js');
+const { settingsTileBlob } = await import('../src/tile.js');
 const { ensureDirs, BACKUP_DIR, BACKUPS_KEPT } = await import('../src/config.js');
 ensureDirs();
 
@@ -134,15 +135,17 @@ test('streaming core: v7 lists favorites at the top and again under their letter
   assert.ok(art(top).equals(art(again)));
   assert.ok(paths(top).equals(paths(again)));
   assert.ok(buf.subarray(528 + top * 128, 528 + top * 128 + 128).equals(buf.subarray(528 + again * 128, 528 + again * 128 + 128)));
-  // The core finds favorites.cfg at paths0 + (count * 3 + 1) * 256, right after the log path,
-  // then carts.cfg right after that.
+  // The core finds path struct k at paths0 + (count * 3 + k) * 256: 0 the log, 1 favorites.cfg,
+  // 2 carts.cfg, 3 recent.cfg, 4 settings.cfg.
   const paths0 = 528 + 42 * (128 + 65536);
   const struct = (k: number) => buf.toString('utf8', paths0 + k * 256, paths0 + (k + 1) * 256).replace(/\0+$/, '');
   assert.equal(struct(42 * 3), '/Saves/gbc/common/picker.log');
   assert.equal(struct(42 * 3 + 1), '/Saves/gbc/common/favorites.cfg');
   assert.equal(struct(42 * 3 + 2), '/Saves/gbc/common/carts.cfg');
+  assert.equal(struct(42 * 3 + 3), '/Saves/gbc/common/recent.cfg');
+  assert.equal(struct(42 * 3 + 4), '/Saves/gbc/common/settings.cfg');
   // Then the cartridge fingerprint table, one record per entry (duplicates included).
-  const table = paths0 + (42 * 3 + 3) * 256;
+  const table = paths0 + (42 * 3 + 5) * 256;
   assert.equal(buf.toString('ascii', 80, 84), 'FPR2');
   assert.equal(buf.readUInt32LE(84), table);
   assert.equal(buf.readUInt16LE(88), 42);
@@ -153,12 +156,15 @@ test('streaming core: v7 lists favorites at the top and again under their letter
   assert.equal(buf.toString('ascii', 96, 100), 'CRT1');
   assert.equal(buf.readUInt32LE(100), cartArt);
   assert.equal(buf.readUInt16LE(104), 42); // no carts: every entry is browsable
-  assert.equal(buf.readUInt16LE(106), 15); // carts.cfg path, the All games tile (there are favorites), the empty slot, entry positions
-  assert.equal(buf.length, cartArt + 5 * 65536);
+  assert.equal(buf.readUInt16LE(106), 31); // carts.cfg path, the All games tile (there are favorites), the empty slot, entry positions, build 26
+  assert.equal(buf.length, cartArt + 6 * 65536);
   // The tile (image 4, after the empty slot) is opaque: no 0x0000 anywhere in its 128 and 80 images.
   const tile = buf.subarray(cartArt + 4 * 65536, cartArt + 4 * 65536 + 45568);
   for (let i = 0; i < tile.length; i += 2) assert.notEqual(tile.readUInt16LE(i), 0, `tile word ${i / 2}`);
-  assert.ok(buf.subarray(cartArt + 4 * 65536 + 45568).every((b) => b === 0), 'tile padded to the stride with zeros');
+  assert.ok(buf.subarray(cartArt + 4 * 65536 + 45568, cartArt + 5 * 65536).every((b) => b === 0), 'tile padded to the stride with zeros');
+  // The Settings tile ends the file (image 5, after the All games tile).
+  assert.ok(buf.subarray(cartArt + 5 * 65536, cartArt + 5 * 65536 + 45568).equals(settingsTileBlob()));
+  assert.ok(buf.subarray(cartArt + 5 * 65536 + 45568).every((b) => b === 0));
   const rec = (i: number) => buf.subarray(table + i * 8, table + i * 8 + 8);
   s.roms.forEach((r, i) => {
     const romBytes = fs.readFileSync(path.join(CARD, r));
@@ -237,14 +243,16 @@ test('v7 index on a synced card: favorites counted, listed again under their let
   for (const l of 'CDEFGHIJKLMNOPQRSUVXY') assert.equal(at(l), 0xffff, l);
   const present = idx.starts.filter((x) => x !== 0xffff);
   assert.deepEqual(present, [...present].sort((a, b) => a - b));
-  // The reserved area holds only the index, the FPR2 block and the CRT1 block.
+  // The reserved area holds only the index, the FPR2 block, the CRT1 block and REC1 (empty: nothing played).
   const head = fs.readFileSync(path.join(card2, 'Assets', 'gbc', 'common', 'covers.bin')).subarray(16, 528);
   // After the index (it ends at file offset 78): zeros, FPR2 at 80 (12 bytes), zeros, CRT1 at 96 (20 bytes), zeros.
   assert.ok(head.subarray(24 - 16 + 27 * 2, 80 - 16).every((b) => b === 0));
   assert.equal(head.toString('ascii', 80 - 16, 84 - 16), 'FPR2');
   assert.ok(head.subarray(92 - 16, 96 - 16).every((b) => b === 0));
   assert.equal(head.toString('ascii', 96 - 16, 100 - 16), 'CRT1');
-  assert.ok(head.subarray(116 - 16).every((b) => b === 0));
+  assert.ok(head.subarray(116 - 16, 128 - 16).every((b) => b === 0));
+  assert.equal(head.toString('ascii', 128 - 16, 132 - 16), 'REC1');
+  assert.ok(head.subarray(132 - 16).every((b) => b === 0), 'n = 0, then zeros');
 });
 
 test('v6 has no index: the reserved area stays zero', async () => {

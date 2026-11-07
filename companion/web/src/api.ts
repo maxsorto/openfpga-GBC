@@ -40,8 +40,6 @@ export interface Game {
   artLabel: string | null;
   status: GameStatus;
   favorite: boolean;
-  /** Null until the core records play history. */
-  lastPlayed: number | null;
   problems: string[];
 }
 
@@ -58,12 +56,34 @@ export interface CardInfo {
   totalBytes: number | null;
   covers: { exists: boolean; bytes: number; modifiedAt: string | null; count: number | null; titles: string[] };
   manifest: { exists: boolean; placed: number; error?: string };
+  /** The Pocket's own settings (settings.cfg), read only. */
+  pocketSettings: PocketSettingsInfo;
+}
+
+/** See server/src/pocketsettings.ts. */
+export interface PocketSettings {
+  startIn: 'flow' | 'grid' | 'last';
+  opensOn: 'favorites' | 'recent' | 'all';
+  legend: boolean;
+  sounds: boolean;
+  lastView: 'flow' | 'grid';
+}
+
+export interface PocketSettingsInfo {
+  file: string;
+  /** file: read from the card. defaults: no file yet, so the defaults. unreadable: a file the app does not understand. */
+  state: 'file' | 'defaults' | 'unreadable';
+  settings: PocketSettings | null;
 }
 
 export interface Library {
   source: { kind: 'folder' | 'card'; root: string; files: number; duplicates: number; unreadable: string[] };
   card: CardInfo | null;
   games: Game[];
+  /** Recently played, newest first: CRCs of up to 32 games in the menu (what Recent mode on the Pocket shows). */
+  recent: string[];
+  /** Launches in the card's recent.cfg that the next sync saves. */
+  recentPending: number;
   /** Games whose choices moved to a new dump of the same game, not shown yet. */
   migrated: { id: string; title: string; kept: string[]; reason: 'library' | 'card'; where: string }[];
   /** Games the pack holds: 31 for v6, 2047 for v7. */
@@ -161,6 +181,10 @@ export interface SyncPlan {
     inLibrary: { id: string; headerTitle: string; game: string }[];
     unidentified: { id: string; headerTitle: string }[];
   };
+  /** Games played on the Pocket: recent.cfg, and what the pack's REC1 holds (v7). */
+  recent: { cfg: { file: string; n: number; launches: number; sha: string } | null; games: { crc: string; title: string }[] };
+  /** The Pocket's own settings (settings.cfg). Read only. */
+  pocketSettings: PocketSettingsInfo;
   /** Favorites changed on the Pocket (favorites.cfg). */
   pocketFavorites: { file: string; records: number; sha: string; changes: { crc: string; favorite: boolean; titles: string[] }[] } | null;
   cardOnly: string[];
@@ -178,9 +202,8 @@ export interface SyncPlan {
     limit: number;
     streaming: boolean;
     reason: string;
-    /** Entries in the favorites and played sections at the top. */
+    /** Entries in the favorites section at the top. */
     favCount: number;
-    playedCount: number;
     /** Entries in the browsable menu; the rest are carts seen on the Pocket. */
     listCount: number;
     /** v7: ROM paths longer than the entry's 71 byte path field. They still play. */

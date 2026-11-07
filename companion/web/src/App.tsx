@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type ArtStatus, type CartsInfo, type Game, type Library } from './api';
+import { api, type ArtStatus, type CartsInfo, type Game, type Library, type PocketSettingsInfo } from './api';
 import { CartsView, cartAsGame } from './CartsView';
 import { GameCard } from './GameCard';
-import { IconCard, IconCheck, IconFolder, IconRefresh, IconSearch, IconStar, IconWarn } from './Icons';
+import { IconCard, IconCheck, IconClock, IconFolder, IconGear, IconRefresh, IconSearch, IconStar, IconWarn } from './Icons';
 import { LibraryMenu } from './LibraryMenu';
 import { PickerModal } from './PickerModal';
 import { SourceMenu } from './SourceMenu';
@@ -19,7 +19,7 @@ type View = 'library' | 'pocket' | 'cartridges';
 interface Item {
   game: Game;
   key: string;
-  /** Place in the Pocket menu, from 1. */
+  /** Place in the Pocket menu, from 1. Null for games that are not a menu entry here (Recently played). */
   pos: number | null;
   /** This is the game's second place: under its letter, after the favorites at the top. */
   again: boolean;
@@ -64,6 +64,16 @@ function initialView(): View {
   const q = new URLSearchParams(window.location.search).get('view');
   const v = q ?? stored('view');
   return v === 'pocket' || v === 'cartridges' ? v : 'library';
+}
+
+/** "starts in Cover flow, opens on Favorites, legend on, sounds on", from settings.cfg. */
+function pocketSettingsText(info: PocketSettingsInfo): string | null {
+  const s = info.settings;
+  if (!s) return null;
+  const view = (v: 'flow' | 'grid') => (v === 'flow' ? 'Cover flow' : 'Grid');
+  const start = s.startIn === 'last' ? `the last view used (${view(s.lastView)})` : view(s.startIn);
+  const opens = { favorites: 'Favorites', recent: 'Recent', all: 'All games' }[s.opensOn];
+  return `starts in ${start}, opens on ${opens}, legend ${s.legend ? 'on' : 'off'}, sounds ${s.sounds ? 'on' : 'off'}`;
 }
 
 function SectionHead({ title, count, note, icon }: { title: string; count?: number; note?: string; icon?: React.ReactNode }) {
@@ -222,27 +232,30 @@ export function App() {
     return (g: Game) => f.test(g) && (!q || g.title.toLowerCase().includes(q) || g.file.toLowerCase().includes(q));
   }, [filter, query]);
 
-  // Pocket order: played (most recent first), then favorites A to Z, then the A to Z list.
-  // With the streaming core (v7) the A to Z list has every game, so a favorite shows
-  // twice: at the top and under its letter. With v6 each game shows once.
+  // Pocket order: favorites A to Z, then the A to Z list. With the streaming core (v7)
+  // the A to Z list has every game, so a favorite shows twice: at the top and under its
+  // letter. With v6 each game shows once. Recently played is the Pocket's Recent mode, not
+  // part of that list: newest first, up to 32, the games the pack's REC1 block holds.
+  const recentCrcs = lib?.recent;
   const pocket = useMemo(() => {
     const games = pocketGames;
-    const played = games.filter((g) => g.lastPlayed != null).sort((a, b) => b.lastPlayed! - a.lastPlayed!);
-    const favs = games.filter((g) => g.lastPlayed == null && g.favorite);
-    const rest = streaming ? games : games.filter((g) => g.lastPlayed == null && !g.favorite);
+    const byCrc = new Map(games.map((g) => [g.crc, g]));
+    const played = (recentCrcs ?? []).map((crc) => byCrc.get(crc)).filter((g): g is Game => !!g);
+    const favs = games.filter((g) => g.favorite);
+    const rest = streaming ? games : games.filter((g) => !g.favorite);
     let n = 0;
     const items = (list: Game[], tag: string, again: boolean): Item[] =>
       list.map((game) => ({
         game,
         key: `${tag}:${game.crc}`,
         pos: game.problems.length ? null : ++n,
-        again: again && (game.favorite || game.lastPlayed != null),
+        again: again && game.favorite,
       }));
-    const p = items(played, 'p', false);
+    const p: Item[] = played.map((game) => ({ game, key: `p:${game.crc}`, pos: null, again: false }));
     const f = items(favs, 'f', false);
     const r = items(rest, 'a', streaming);
     return { played: p, favs: f, rest: r, entries: n };
-  }, [pocketGames, streaming]);
+  }, [pocketGames, streaming, recentCrcs]);
 
   const unfiltered = filter === 'all' && !query.trim();
 
@@ -289,14 +302,17 @@ export function App() {
       height: HEAD_H,
       node: (
         <SectionHead
+          icon={<IconClock size={14} className="section-star" />}
           title="Recently played"
           count={pocket.played.length}
           note={
             pocket.played.length
-              ? 'Most recent first'
+              ? `${streaming ? 'Recent mode on the Pocket shows these, newest first.' : 'Newest first. Recent mode on the Pocket needs the streaming core.'}${
+                  lib?.recentPending ? ` Includes ${lib.recentPending === 1 ? 'a game' : 'games'} played since the last sync.` : ''
+                }`
               : streaming
-                ? 'None yet. Play history from the Pocket shows here in a later version of the app.'
-                : 'None yet. The Pocket will record play history once the streaming core is in.'
+                ? 'None yet. Games you play on the Pocket show here, newest first.'
+                : 'None yet. The Pocket records what you play once the streaming core is in.'
           }
         />
       ),
@@ -336,7 +352,7 @@ export function App() {
     });
     run('rest', pocket.rest);
     return out;
-  }, [view, games, matches, pocket, unfiltered, maxGames, streaming, packVersion]);
+  }, [view, games, matches, pocket, unfiltered, maxGames, streaming, packVersion, lib?.recentPending]);
 
   const shownCount = useMemo(() => blocks.reduce((n, b) => n + (b.kind === 'items' ? b.items.length : 0), 0), [blocks]);
 
@@ -577,6 +593,19 @@ export function App() {
                   <>
                     {lib.pack.reason} All {games.length} games still go on the card, and the first {maxGames} are in the menu: favorites first, then A to Z.
                   </>
+                )}
+              </div>
+            )}
+            {view === 'pocket' && lib?.card && (
+              <div className="banner info" title={`From ${lib.card.pocketSettings.file} on the card. Change them on the Pocket, in Settings.`}>
+                <IconGear />
+                {lib.card.pocketSettings.state === 'unreadable' ? (
+                  <span>The Pocket's settings.cfg on the card could not be read. Sync leaves it as it is.</span>
+                ) : (
+                  <span>
+                    On the Pocket: {pocketSettingsText(lib.card.pocketSettings)}
+                    {lib.card.pocketSettings.state === 'defaults' && <span className="dim"> (defaults)</span>}
+                  </span>
                 )}
               </div>
             )}
