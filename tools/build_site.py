@@ -131,7 +131,7 @@ def stills():
     cover_wall(p).save(os.path.join(OUT, 'wall.webp'), 'WEBP', quality=82, method=6)
     og_image(vit).save(os.path.join(OUT, 'og.png'), optimize=True)
     open(os.path.join(OUT, 'favicon.svg'), 'w').write(FAVICON)
-    app = Image.open(os.path.join(REPO, 'docs', 'images', 'companion-library.png')).convert('RGB').crop((0, 150, 2880, 1330))
+    app = Image.open(os.path.join(REPO, 'docs', 'images', 'companion-library.png')).convert('RGB').crop((0, 0, 2880, 1180))
     app.resize((1600, round(1600 * app.height / app.width)), Image.LANCZOS).save(os.path.join(OUT, 'app.jpg'), quality=86, optimize=True)
     pause = Image.open(os.path.join(REPO, 'docs', 'images', 'pause-home.png')).convert('RGB')
     pause.resize((1280, 1152), Image.NEAREST).save(os.path.join(OUT, 'pause.webp'), 'WEBP', quality=90, method=6)

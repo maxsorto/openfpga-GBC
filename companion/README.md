@@ -1,7 +1,7 @@
-# GBC Cover Companion
+# Vitrine Companion
 
 A Mac app that puts your Game Boy library on the Analogue Pocket with box art, for the
-GBC cover picker core. You point it at the folder with your ROMs. It names each one,
+Vitrine core. You point it at the folder with your ROMs. It names each one,
 finds its box art, lets you star favorites and fix anything it got wrong, then syncs
 every game to the SD card and writes `covers.bin`.
 

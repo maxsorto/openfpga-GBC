@@ -73,7 +73,7 @@ export function choosePack(card: string | null, games: number): PackChoice {
   const reason = !card
     ? `No card yet. Today's core shows ${MAX_GAMES} games.`
     : !core.found
-      ? `No cover picker core found in ${CORE_DIR.split(path.sep).join('/')}. Writing the ${MAX_GAMES} game format today's core reads.`
+      ? `No Vitrine core found in ${CORE_DIR.split(path.sep).join('/')}. Writing the ${MAX_GAMES} game format today's core reads.`
       : `This core (${core.version ?? 'unknown version'}) shows ${MAX_GAMES} games. Install build 17 to see all.`;
   return { version: 6, limit: MAX_GAMES, core, streaming: false, reason };
 }

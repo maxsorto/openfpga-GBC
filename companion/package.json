@@ -1,8 +1,8 @@
 {
-  "name": "gbc-cover-companion",
+  "name": "vitrine-companion",
   "version": "0.1.0",
   "private": true,
-  "description": "Mac companion app that builds the cover pack for the Analogue Pocket GBC cover picker core.",
+  "description": "Mac companion app that builds the cover pack for the Vitrine core on the Analogue Pocket.",
   "type": "module",
   "workspaces": [
     "server",

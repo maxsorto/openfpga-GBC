@@ -403,7 +403,7 @@ export function App() {
         <div className="brand">
           <img src="/icon.svg" alt="" width={22} height={34} />
           <div>
-            <div className="brand-name">Cover Picker</div>
+            <div className="brand-name">Vitrine</div>
             <div className="brand-sub">For Analogue Pocket · GBC core</div>
           </div>
         </div>

@@ -73,7 +73,7 @@ test('format choice: cover1 gives v6, cover2 and up give v7, missing or unreadab
   c = choosePack(card, 702);
   assert.equal(c.version, 6);
   assert.equal(c.core.found, false);
-  assert.match(c.reason, /No cover picker core found/);
+  assert.match(c.reason, /No Vitrine core found/);
 
   setCore(card, null, '{ not json');
   assert.equal(readCore(card).error !== undefined, true);

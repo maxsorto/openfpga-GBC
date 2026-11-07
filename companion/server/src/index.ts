@@ -7,7 +7,7 @@ const isProd = process.env.NODE_ENV === 'production';
 
 serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
   const url = `http://localhost:${info.port}`;
-  console.log(`\n  GBC Cover Companion is running at ${url}`);
+  console.log(`\n  Vitrine is running at ${url}`);
   if (isProd && !process.env.NO_OPEN) {
     import('node:child_process').then(({ spawn }) => spawn('open', [url], { stdio: 'ignore', detached: true }).unref());
   } else if (!isProd) {

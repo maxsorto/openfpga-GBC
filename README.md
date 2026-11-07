@@ -68,8 +68,8 @@ R is still fast forward. In game, Select and X are left alone because games use 
     <td width="50%"><img src="docs/images/companion-pocket.png" alt="Pocket view: favorites first, then everything else A to Z"></td>
   </tr>
   <tr>
-    <td><img src="docs/images/companion-picker.png" alt="Cover picker with alternative box art"></td>
-    <td><img src="docs/images/companion-sync.png" alt="Sync plan with each save matched to its ROM"></td>
+    <td><img src="docs/images/companion-picker.png" alt="Choosing a cover from the alternative box art"></td>
+    <td><img src="docs/images/companion-sync.png" alt="Sync plan: what gets copied, the pack, and what is never touched"></td>
   </tr>
   <tr>
     <td><img src="docs/images/companion-gbc.png" alt="Game Boy Color theme, Atomic Purple shell over the board"></td>
